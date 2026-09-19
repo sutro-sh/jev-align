@@ -17,6 +17,12 @@ from .models import (
 TaskKind = Literal["binary", "multiclass", "multilabel", "score"]
 UncertaintyKind = Literal["calibrated_probability", "native_confidence"]
 
+DEFAULT_BACKEND_MODELS = {
+    "typesafe": "jev-1.13.0",
+    "cloudflare": "typesafe/jev",
+    "vercel": "typesafe-ai/jev",
+}
+
 
 @dataclass(frozen=True)
 class BackendCapabilities:
@@ -37,14 +43,20 @@ class EvaluationBackend(Protocol):
     ) -> list[Prediction]: ...
 
 
-def create_backend(
-    config: BackendConfig, *, concurrency: int
-) -> EvaluationBackend:
+def create_backend(config: BackendConfig, *, concurrency: int) -> EvaluationBackend:
     """Construct the configured adapter without leaking providers into the core."""
     if config.provider == "typesafe":
         from .jev import TypeSafeJevEvaluator
 
         return TypeSafeJevEvaluator(model=config.model, concurrency=concurrency)
+    if config.provider == "cloudflare":
+        from .jev_gateways import CloudflareJevEvaluator
+
+        return CloudflareJevEvaluator(model=config.model, concurrency=concurrency)
+    if config.provider == "vercel":
+        from .jev_gateways import VercelJevEvaluator
+
+        return VercelJevEvaluator(model=config.model, concurrency=concurrency)
     raise ValueError(f"unsupported evaluation backend: {config.provider}")
 
 
@@ -53,7 +65,40 @@ def backend_credential_error(
 ) -> str | None:
     if config.provider == "typesafe" and not environment.get("TYPESAFE_API_KEY"):
         return "TYPESAFE_API_KEY must be set for the TypeSafe backend"
+    if config.provider == "cloudflare":
+        missing = [
+            name
+            for name in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+            if not environment.get(name)
+        ]
+        if missing:
+            return f"{', '.join(missing)} must be set for the Cloudflare backend"
+    if config.provider == "vercel" and not environment.get("AI_GATEWAY_API_KEY"):
+        return "AI_GATEWAY_API_KEY must be set for the Vercel backend"
     return None
+
+
+def default_backend_model(provider: str) -> str:
+    try:
+        return DEFAULT_BACKEND_MODELS[provider]
+    except KeyError as error:
+        raise ValueError(f"unsupported evaluation backend: {provider}") from error
+
+
+def available_backend_providers(
+    environment: Mapping[str, str],
+) -> list[tuple[str, str]]:
+    """Return configured Jev providers in preferred order."""
+    available: list[tuple[str, str]] = []
+    if environment.get("TYPESAFE_API_KEY"):
+        available.append(("typesafe", "TypeSafe AI (direct)"))
+    if environment.get("AI_GATEWAY_API_KEY"):
+        available.append(("vercel", "Vercel AI Gateway"))
+    if environment.get("CLOUDFLARE_ACCOUNT_ID") and environment.get(
+        "CLOUDFLARE_API_TOKEN"
+    ):
+        available.append(("cloudflare", "Cloudflare Workers AI"))
+    return available
 
 
 def backend_display_name(backend: EvaluationBackend) -> str:
@@ -71,9 +116,7 @@ def task_kind(candidate: TaskSpec) -> TaskKind:
     return "binary"
 
 
-def validate_backend_for_task(
-    backend: EvaluationBackend, candidate: TaskSpec
-) -> None:
+def validate_backend_for_task(backend: EvaluationBackend, candidate: TaskSpec) -> None:
     """Reject adapters that cannot supply uncertainty for the requested task."""
     kind = task_kind(candidate)
     capabilities = backend.capabilities

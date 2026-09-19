@@ -13,7 +13,7 @@ Requires Python 3.11 or newer.
 
 ```shell
 uv tool install jev-align
-export TYPESAFE_API_KEY="..."
+export TYPESAFE_API_KEY="..." # Or use Vercel or Cloudflare below
 export OPENAI_API_KEY="..." # or ANTHROPIC_API_KEY / GEMINI_API_KEY
 jeva
 ```
@@ -70,6 +70,28 @@ jeva optimize posts.csv \
 Use repeated `--class "NAME=DESCRIPTION"` options for multiclass or multilabel
 tasks, and repeated `--score-level` options for scoring tasks. Run
 `jeva optimize --help` for the complete flag reference.
+
+## Jev providers
+
+Jev can run directly through TypeSafe AI, Vercel AI Gateway, or Cloudflare
+Workers AI. The guided setup detects configured providers and lets you choose.
+
+```shell
+# Vercel AI Gateway
+export AI_GATEWAY_API_KEY="..."
+jeva optimize data.csv --question "Is this relevant?" --column text \
+  --backend vercel
+
+# Cloudflare Workers AI
+export CLOUDFLARE_ACCOUNT_ID="..."
+export CLOUDFLARE_API_TOKEN="..."
+jeva optimize data.csv --question "Is this relevant?" --column text \
+  --backend cloudflare
+```
+
+These routes do not require a `TYPESAFE_API_KEY`. The chosen provider is saved
+with the AI Function, so later runtime calls use the same provider. GEPA's
+reflection model is configured separately.
 
 ## Reflection models
 

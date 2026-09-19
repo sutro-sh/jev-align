@@ -38,9 +38,11 @@ from .data import (
     source_sha256,
 )
 from .backends import (
+    available_backend_providers,
     backend_credential_error,
     backend_display_name,
     create_backend,
+    default_backend_model,
     evaluate_with_progress,
     validate_backend_for_task,
 )
@@ -543,6 +545,7 @@ def _holdout_story_ids(
 
 def _new_run_wizard() -> None:
     console.print(Panel("Create a new AI Function", title="jev-align"))
+    backend_name = _choose_evaluation_backend()
     root = Path.cwd()
     data = _choose_dataset(root)
     pool_size = _choose_pool_size(data)
@@ -690,6 +693,7 @@ def _new_run_wizard() -> None:
         false_criteria=false_criteria,
         true_label=true_label,
         false_label=false_label,
+        backend_name=backend_name,
     )
 
 
@@ -700,6 +704,25 @@ def _configure_provider_key_aliases(
     target = os.environ if environment is None else environment
     if not target.get("ANTHROPIC_API_KEY") and target.get("CLAUDE_API_KEY"):
         target["ANTHROPIC_API_KEY"] = target["CLAUDE_API_KEY"]
+
+
+def _choose_evaluation_backend() -> str:
+    providers = available_backend_providers(os.environ)
+    if not providers:
+        raise typer.BadParameter(
+            "no Jev provider credentials detected; set TYPESAFE_API_KEY, "
+            "AI_GATEWAY_API_KEY, or both CLOUDFLARE_ACCOUNT_ID and "
+            "CLOUDFLARE_API_TOKEN"
+        )
+    if len(providers) == 1:
+        provider, label = providers[0]
+        console.print(f"[dim]Jev provider: {label}[/dim]")
+        return provider
+    selected = _select_option(
+        "Jev provider",
+        [(str(index), label) for index, (_, label) in enumerate(providers, start=1)],
+    )
+    return providers[int(selected) - 1][0]
 
 
 def _available_reflection_models(
@@ -2192,7 +2215,10 @@ def optimize(
     ] = None,
     backend_name: Annotated[
         str,
-        typer.Option("--backend", help="AI Function evaluation backend"),
+        typer.Option(
+            "--backend",
+            help="Jev provider: typesafe, vercel, or cloudflare",
+        ),
     ] = "typesafe",
     backend_model: Annotated[
         str | None,
@@ -2254,6 +2280,19 @@ def optimize(
     else:
         if data is None or question is None:
             raise typer.BadParameter("new runs require DATA and --question")
+        try:
+            selected_backend_model = backend_model or default_backend_model(
+                backend_name
+            )
+        except ValueError as error:
+            raise typer.BadParameter(str(error)) from error
+        backend_config = BackendConfig(
+            provider=backend_name,
+            model=selected_backend_model,
+        )
+        credential_error = backend_credential_error(backend_config, os.environ)
+        if credential_error:
+            raise typer.BadParameter(credential_error)
         selected_reflection_model = reflection_model or _default_reflection_model()
         if selected_reflection_model is None:
             raise typer.BadParameter(
@@ -2382,10 +2421,7 @@ def optimize(
             column_mode=column_mode,
             pool_size=len(stories),
             seed=seed,
-            backend=BackendConfig(
-                provider=backend_name,
-                model=backend_model or "jev-1.13.0",
-            ),
+            backend=backend_config,
             reflection_model=selected_reflection_model,
             metric_budget=metric_budget,
             concurrency=concurrency,
