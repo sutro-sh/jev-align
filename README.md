@@ -9,7 +9,7 @@ application and keep learning from production examples.
 
 ## Demo
 
-https://github.com/user-attachments/assets/8f7d7431-6e8e-445b-9961-3b3758c0e5c4
+https://github.com/user-attachments/assets/81650587-e3f1-4655-8213-ed5f6e120e9a
 
 ## Quick start
 
