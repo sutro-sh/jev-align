@@ -3,8 +3,8 @@
 `jev-align` is an experimental CLI for aligning [TypeSafe's Jev](https://docs.typesafe.ai/introduction) to your
 judgment, built by [Sutro](https://sutro.sh/). 
 
-It finds uncertain rows in a local dataset, asks you to label them, and uses
-[GEPA](https://gepa-ai.github.io/gepa/) to improve Jev's accuracy. 
+It finds uncertain rows offkine in a sample dataset, asks you to label them, and uses
+[GEPA](https://gepa-ai.github.io/gepa/) to improve Jev's accuracy. Then decorate your future calls to Jev, and keep learning from production examples. 
 
 It's last-mile, feedback-driven fine-tuning, for Jev.
 
