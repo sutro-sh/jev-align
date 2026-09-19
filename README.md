@@ -7,6 +7,10 @@ It finds uncertain examples, asks you to label them, and uses
 [GEPA](https://gepa-ai.github.io/gepa/) to improve the function. Use it in your
 application and keep learning from production examples.
 
+## Demo
+
+https://github.com/user-attachments/assets/8f7d7431-6e8e-445b-9961-3b3758c0e5c4
+
 ## Quick start
 
 Requires Python 3.11 or newer.
