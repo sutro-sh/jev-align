@@ -194,6 +194,53 @@ decision rather than starting another optimization.
 Running an accepted function on another dataset writes JSONL results to
 `.jev-align/outputs/` without changing the saved function.
 
+### Continual learning from live calls
+
+Applications can call an accepted AI Function and record uncertain or randomly
+audited predictions for later human labeling. Install `jev-align` in the
+application environment, create one `Capture` for each worker process, and pass
+it to the synchronous `aligned` decorator:
+
+```python
+from jev_align import Capture, aligned
+
+with Capture(ambiguity_threshold=0.8, audit_rate=0.05) as captures:
+    @aligned(".jev-align/runs/RUN_ID", capture=captures)
+    def is_aviation(title, text):
+        return {"title": title, "text": text}
+
+    prediction = is_aviation(
+        "Airport expansion",
+        "A new runway opens next year.",
+    )
+```
+
+The decorated function's returned mapping must use the input columns configured
+for the saved run. It returns a normalized `Prediction`; it does not return a
+human label. `Capture` adds no model call and writes selected observations to
+`.jev-align/captures/` in the background. Use it as a context manager or call
+`close()` during shutdown so queued records can be flushed. This integration is
+currently synchronous.
+
+To continue learning, run `jeva functions`, open the matching AI Function, and
+select **Resume learning**, or run:
+
+```shell
+jeva optimize --resume .jev-align/runs/RUN_ID
+```
+
+When the CLI offers newly captured calls, let the user decide whether to import
+them. Every unique eligible call is imported; there is no capture-pool row cap.
+The model's recorded prediction is never treated as truth. The user must label
+every selected example, with an optional rationale, before GEPA can learn from
+it. Previously labeled captures remain in the evaluation pool, while only
+unlabeled inputs are eligible for another annotation batch.
+
+Accepted definitions are loaded when the decorated function is created. Restart
+the process or recreate the decorated function to use a newly accepted version.
+Use `JEVA_CAPTURE_DIR` when the application and CLI need to share a capture
+directory outside the workspace.
+
 ## Helping develop the repository
 
 The main modules are:
@@ -210,7 +257,7 @@ The main modules are:
 - `src/jev_align/captured_inputs.py`: discovery and deduplication of captured inputs.
 
 Capture files are unlabeled observations, not run state. Never treat their model
-predictions as human labels. Resuming a saved function offers to sample matching
+predictions as human labels. Resuming a saved function offers to import matching
 captured calls from the current or run workspace's `.jev-align/captures/` and
 optional `JEVA_CAPTURE_DIR`. Resolve pending proposals first. Approved inputs
 are persisted in `captured-inputs.json` inside the run; treat this as application
