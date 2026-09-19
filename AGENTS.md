@@ -37,7 +37,9 @@ model's reasoning.
 
 ### Before starting
 
-1. Confirm that `TYPESAFE_API_KEY` is available.
+1. Confirm that one Jev provider is configured: `TYPESAFE_API_KEY`,
+   `AI_GATEWAY_API_KEY`, or both `CLOUDFLARE_ACCOUNT_ID` and
+   `CLOUDFLARE_API_TOKEN`.
 2. Confirm a reflection provider is configured: `OPENAI_API_KEY`,
    `ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`, `GEMINI_API_KEY`, or the endpoint and
    credentials required by a custom LiteLLM provider.
@@ -135,7 +137,8 @@ jeva optimize DATA \
 
 The provider/model identifier and environment variables must follow the
 [LiteLLM provider configuration](https://docs.litellm.ai/docs/providers).
-`TYPESAFE_API_KEY` remains required for JEV evaluation.
+Jev evaluation requires the credentials for the selected evaluation backend;
+the reflection provider is separate.
 
 ### Labeling rounds
 
@@ -244,7 +247,8 @@ directory outside the workspace.
 concatenation. Its return value is a provider-neutral `Prediction`: binary tasks
 expose `probability`, multiclass tasks `choice` and `confidence`, multilabel
 tasks `label_probabilities`, and score tasks `score` and `confidence`. Runtime
-calls require `TYPESAFE_API_KEY`, but not a reflection-model key. Pending
+calls require the selected Jev provider's credentials, but not a
+reflection-model key. Pending
 proposals are never loaded. A run with no accepted proposal uses its seed
 definition.
 
@@ -290,7 +294,8 @@ The main modules are:
 - `src/jev_align/session.py`: round lifecycle, caching, rewind, and decisions.
 - `src/jev_align/optimizer.py`: GEPA integration and task metrics.
 - `src/jev_align/backends.py`: provider-neutral backend contract and factory.
-- `src/jev_align/jev.py`: TypeSafe JEV adapter.
+- `src/jev_align/jev.py`: direct TypeSafe JEV adapter.
+- `src/jev_align/jev_gateways.py`: Cloudflare and Vercel Jev transports.
 - `src/jev_align/models.py`: persisted schemas and normalized predictions.
 - `src/jev_align/persistence.py`: run and label storage.
 - `src/jev_align/runtime.py`: synchronous callable interface for saved functions.
@@ -311,9 +316,10 @@ pool, including every labeled input. Filter labeled inputs only when selecting
 the next annotation batch. Report captured-pool uncertainty separately so
 original fixed-pool history stays comparable.
 
-TypeSafe JEV is currently the only included evaluation backend. Runs persist a
-provider-neutral backend configuration so additional adapters can be added;
-`--jev-model` remains a compatibility alias for `--backend-model`.
+Jev can run through TypeSafe directly (`--backend typesafe`), Cloudflare
+Workers AI (`--backend cloudflare`), or Vercel AI Gateway (`--backend vercel`).
+Runs persist the provider-neutral backend configuration; `--jev-model` remains
+a compatibility alias for `--backend-model`.
 
 Preserve these product invariants when making changes:
 
