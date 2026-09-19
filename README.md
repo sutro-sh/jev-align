@@ -142,6 +142,64 @@ Use `--holdout` to enable the same 20% held-out evaluation in a scripted setup.
 Use `--max-metric-calls` to change GEPA's per-round budget;
 `--metric-budget` remains a compatibility alias.
 
+## Reflection models and inference providers
+
+The reflection model is the model GEPA uses to propose improvements to the AI
+Function. It is separate from TypeSafe JEV, which evaluates the dataset.
+`jev-align` sends reflection requests through
+[LiteLLM](https://docs.litellm.ai/docs/providers), so `--reflection-model`
+accepts LiteLLM's `provider/model` identifiers.
+
+OpenAI, Anthropic, and Gemini models are offered automatically when their API
+keys are configured. You can use any other LiteLLM provider by setting its
+environment variables and supplying the model explicitly. For example,
+Fireworks AI can be used with:
+
+```shell
+export FIREWORKS_API_KEY="..."
+
+jeva optimize data.csv \
+  --question "Is this relevant?" \
+  --column text \
+  --reflection-model \
+    "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"
+```
+
+### Local or hosted vLLM
+
+For a vLLM server exposing an OpenAI-compatible `/v1` API, use LiteLLM's
+`hosted_vllm` provider. The model name after the prefix must match the model
+name served by vLLM:
+
+```shell
+export HOSTED_VLLM_API_BASE="http://localhost:8000/v1"
+# Only needed when the endpoint requires authentication:
+export HOSTED_VLLM_API_KEY="..."
+
+jeva optimize data.csv \
+  --question "Is this relevant?" \
+  --column text \
+  --reflection-model "hosted_vllm/Qwen/Qwen3-8B"
+```
+
+You can also address any OpenAI-compatible gateway through LiteLLM's OpenAI
+provider:
+
+```shell
+export OPENAI_API_BASE="http://localhost:8000/v1"
+export OPENAI_API_KEY="local" # Replace this when the endpoint requires a key.
+
+jeva optimize data.csv \
+  --question "Is this relevant?" \
+  --column text \
+  --reflection-model "openai/Qwen/Qwen3-8B"
+```
+
+In the guided setup, select **Choose a different model**, then **Enter a custom
+LiteLLM model**. When no built-in provider key is detected, the wizard goes
+directly to the custom model prompt. `TYPESAFE_API_KEY` is still required for
+JEV dataset evaluation regardless of which reflection provider you choose.
+
 ## Controls
 
 - Use arrow keys and Enter in menus.
