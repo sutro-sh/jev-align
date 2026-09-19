@@ -50,6 +50,8 @@ class RoundReport:
     proposed_replay_ambiguity: dict[str, float | int] | None = None
     previous_holdout_metrics: ClassificationMetrics | None = None
     proposed_holdout_metrics: ClassificationMetrics | None = None
+    previous_capture_ambiguity: dict[str, float | int] | None = None
+    proposed_capture_ambiguity: dict[str, float | int] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +66,8 @@ class RoundReport:
             "ambiguity_scope": self.ambiguity_scope,
             "previous_replay_ambiguity": self.previous_replay_ambiguity,
             "proposed_replay_ambiguity": self.proposed_replay_ambiguity,
+            "previous_capture_ambiguity": self.previous_capture_ambiguity,
+            "proposed_capture_ambiguity": self.proposed_capture_ambiguity,
             "previous_holdout_metrics": (
                 self.previous_holdout_metrics.model_dump()
                 if self.previous_holdout_metrics is not None
@@ -103,6 +107,8 @@ class RoundReport:
             ambiguity_scope=value.get("ambiguity_scope", "remaining_unlabeled"),
             previous_replay_ambiguity=value.get("previous_replay_ambiguity"),
             proposed_replay_ambiguity=value.get("proposed_replay_ambiguity"),
+            previous_capture_ambiguity=value.get("previous_capture_ambiguity"),
+            proposed_capture_ambiguity=value.get("proposed_capture_ambiguity"),
             previous_holdout_metrics=(
                 metrics_type.model_validate(value["previous_holdout_metrics"])
                 if value.get("previous_holdout_metrics") is not None
@@ -169,10 +175,24 @@ class ClimbSession:
         backend: EvaluationBackend,
     ) -> None:
         self.state = state
+        # Only this original panel participates in fixed-pool diagnostics/cache.
         self.stories = stories
-        self.story_by_id = {story.id: story for story in stories}
+        self.captured_stories = store.load_captured_inputs()
+        self.capture_pool: list[Story] | None = None
+        self.story_by_id = {
+            story.id: story for story in [*stories, *self.captured_stories]
+        }
         self.store = store
         self.backend = backend
+
+    def use_captured_inputs(self, stories: list[Story]) -> None:
+        """Persist the user-approved input snapshot before collecting any labels."""
+        by_id = {story.id: story for story in self.captured_stories}
+        by_id.update({story.id: story for story in stories})
+        self.store.save_captured_inputs(list(by_id.values()))
+        self.captured_stories = list(by_id.values())
+        self.story_by_id.update(by_id)
+        self.capture_pool = stories
 
     def unlabeled_stories(self) -> list[Story]:
         labeled = {
@@ -183,7 +203,9 @@ class ClimbSession:
         holdout = set(self.state.holdout_story_ids)
         return [
             story
-            for story in self.stories
+            for story in (
+                self.capture_pool if self.capture_pool is not None else self.stories
+            )
             if story.id not in labeled and story.id not in holdout
         ]
 
@@ -200,15 +222,28 @@ class ClimbSession:
             if story.id in holdout and story.id not in labeled
         ]
 
-    def _pool_cache_path(self, slot: Literal["current", "pending"]) -> Path:
-        return self.store.directory / f"pool-predictions-{slot}.json"
+    def _pool_cache_path(
+        self, slot: Literal["current", "pending"], *, captured: bool = False
+    ) -> Path:
+        prefix = "capture" if captured else "pool"
+        return self.store.directory / f"{prefix}-predictions-{slot}.json"
+
+    def _evaluation_pool(self, *, captured: bool) -> list[Story]:
+        if captured:
+            if self.capture_pool is None:
+                raise ValueError("no captured pool has been selected")
+            return self.capture_pool
+        return self.stories
 
     def _load_pool_cache(
         self,
         slot: Literal["current", "pending"],
         candidate: TaskSpec,
+        *,
+        captured: bool = False,
     ) -> list[Prediction] | None:
-        path = self._pool_cache_path(slot)
+        stories = self._evaluation_pool(captured=captured)
+        path = self._pool_cache_path(slot, captured=captured)
         if not path.exists():
             return None
         try:
@@ -239,10 +274,10 @@ class ClimbSession:
             predictions = [
                 Prediction.model_validate(item) for item in payload["predictions"]
             ]
-            expected_ids = {story.id for story in self.stories}
+            expected_ids = {story.id for story in stories}
             if {item.story_id for item in predictions} != expected_ids:
                 return None
-            if len(predictions) != len(self.stories):
+            if len(predictions) != len(stories):
                 return None
             return predictions
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -253,9 +288,11 @@ class ClimbSession:
         slot: Literal["current", "pending"],
         candidate: TaskSpec,
         predictions: list[Prediction],
+        *,
+        captured: bool = False,
     ) -> None:
         self.store.write_json(
-            f"pool-predictions-{slot}.json",
+            self._pool_cache_path(slot, captured=captured).name,
             {
                 "version": 2,
                 "candidate": candidate.model_dump(),
@@ -267,23 +304,42 @@ class ClimbSession:
             },
         )
 
-    def current_pool_predictions(self) -> list[Prediction]:
-        cached = self._load_pool_cache("current", self.state.current_candidate)
-        if cached is not None:
-            return cached
+    def _evaluate_pool(
+        self,
+        candidate: TaskSpec,
+        slot: Literal["current", "pending"],
+        *,
+        captured: bool = False,
+    ) -> list[Prediction]:
+        phase = "current" if slot == "current" else "proposed"
+        pool_name = "captured pool" if captured else "AI Function"
         predictions = evaluate_with_progress(
             self.backend,
-            self.state.current_candidate,
-            self.stories,
-            f"{backend_display_name(self.backend)} · current AI Function",
+            candidate,
+            self._evaluation_pool(captured=captured),
+            f"{backend_display_name(self.backend)} · {phase} {pool_name}",
         )
-        self._save_pool_cache("current", self.state.current_candidate, predictions)
+        self._save_pool_cache(slot, candidate, predictions, captured=captured)
         return predictions
+
+    def current_pool_predictions(self, *, captured: bool = False) -> list[Prediction]:
+        cached = self._load_pool_cache(
+            "current", self.state.current_candidate, captured=captured
+        )
+        if cached is not None:
+            return cached
+        return self._evaluate_pool(
+            self.state.current_candidate, "current", captured=captured
+        )
 
     def acquire(self) -> tuple[list[Any], list[Prediction]]:
         # Score the frozen original pool every round. Labeled rows are removed
         # only from acquisition eligibility, not from longitudinal diagnostics.
         predictions = self.current_pool_predictions()
+        acquisition_pool = (
+            self.current_pool_predictions(captured=True)
+            if self.capture_pool is not None else predictions
+        )
         labeled_ids = {
             record.story_id
             for record in self.store.load_labels()
@@ -292,12 +348,15 @@ class ClimbSession:
         holdout_ids = set(self.state.holdout_story_ids)
         unlabeled_predictions = [
             item
-            for item in predictions
+            for item in acquisition_pool
             if item.story_id not in labeled_ids and item.story_id not in holdout_ids
         ]
         acquisitions = select_batch(
             unlabeled_predictions,
-            batch_size=self.state.batch_size,
+            batch_size=(
+                min(self.state.batch_size, len(unlabeled_predictions))
+                if self.capture_pool is not None else self.state.batch_size
+            ),
             exploration_count=1,
             seed=self.state.seed + self.state.round_number,
         )
@@ -370,9 +429,24 @@ class ClimbSession:
             for item in reversed(retained_history)
             if item.decision in {"seed", "accepted"}
         )
+        all_labels = self.store.load_labels()
+        reopened = [
+            self.story_by_id[item.story_id]
+            for item in all_labels
+            if item.round_number == target_round and item.evaluation_split == "train"
+        ]
+        captured_ids = {story.id for story in self.captured_stories}
+        if any(story.id in captured_ids for story in reopened):
+            # Rewinding after changing acquisition sources still reopens the
+            # previous round's captured examples, including after a restart.
+            self.capture_pool = list({
+                story.id: story for story in [*reopened, *(self.capture_pool or [])]
+            }.values())
+        else:
+            self.capture_pool = None
         retained_labels = [
             item
-            for item in self.store.load_labels()
+            for item in all_labels
             if item.round_number < target_round
         ]
         self.store.replace_labels(retained_labels)
@@ -409,7 +483,7 @@ class ClimbSession:
         ]
         examples = label_examples(labels)
         holdout_examples = label_examples(holdout_labels)
-        previous_metrics, _ = evaluate_labeled_candidate(
+        previous_metrics, previous_training = evaluate_labeled_candidate(
             self.state.current_candidate, examples, self.story_by_id, self.backend
         )
         outcome = optimize_candidate(
@@ -425,7 +499,7 @@ class ClimbSession:
             concurrency=self.state.concurrency,
             seed=self.state.seed,
         )
-        proposed_metrics, _ = evaluate_labeled_candidate(
+        proposed_metrics, proposed_training = evaluate_labeled_candidate(
             outcome.candidate, examples, self.story_by_id, self.backend
         )
         previous_holdout_metrics = None
@@ -444,20 +518,18 @@ class ClimbSession:
                 self.backend,
             )
 
-        labeled_ids = {item.story_id for item in labels}
-        proposed_pool = evaluate_with_progress(
-            self.backend,
-            outcome.candidate,
-            self.stories,
-            f"{backend_display_name(self.backend)} · proposed AI Function",
-        )
-        self._save_pool_cache("pending", outcome.candidate, proposed_pool)
-        previous_replay = [
-            item for item in pool_predictions if item.story_id in labeled_ids
-        ]
-        proposed_replay = [
-            item for item in proposed_pool if item.story_id in labeled_ids
-        ]
+        proposed_pool = self._evaluate_pool(outcome.candidate, "pending")
+        previous_capture_ambiguity = None
+        proposed_capture_ambiguity = None
+        if self.capture_pool is not None:
+            previous_capture_ambiguity = ambiguity_summary(
+                self.current_pool_predictions(captured=True)
+            )
+            proposed_capture_ambiguity = ambiguity_summary(
+                self._evaluate_pool(outcome.candidate, "pending", captured=True)
+            )
+        previous_replay = list(previous_training.values())
+        proposed_replay = list(proposed_training.values())
         report = RoundReport(
             previous_candidate=self.state.current_candidate,
             proposed_candidate=outcome.candidate,
@@ -471,6 +543,8 @@ class ClimbSession:
             proposed_replay_ambiguity=ambiguity_summary(proposed_replay),
             previous_holdout_metrics=previous_holdout_metrics,
             proposed_holdout_metrics=proposed_holdout_metrics,
+            previous_capture_ambiguity=previous_capture_ambiguity,
+            proposed_capture_ambiguity=proposed_capture_ambiguity,
         )
         self.state.pending_candidate = outcome.candidate
         self.state.pending_report = report.as_dict()
@@ -503,6 +577,13 @@ class ClimbSession:
         self.state.round_number += 1
         self.store.save_state(self.state)
         if decision == "accept":
-            pending_cache = self._pool_cache_path("pending")
-            if pending_cache.exists():
-                os.replace(pending_cache, self._pool_cache_path("current"))
+            scopes = [False]
+            if report.proposed_capture_ambiguity is not None:
+                scopes.append(True)
+            for captured in scopes:
+                pending_cache = self._pool_cache_path("pending", captured=captured)
+                if pending_cache.exists():
+                    os.replace(
+                        pending_cache,
+                        self._pool_cache_path("current", captured=captured),
+                    )

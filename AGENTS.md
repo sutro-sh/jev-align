@@ -205,6 +205,23 @@ The main modules are:
 - `src/jev_align/jev.py`: TypeSafe JEV adapter.
 - `src/jev_align/models.py`: persisted schemas and normalized predictions.
 - `src/jev_align/persistence.py`: run and label storage.
+- `src/jev_align/runtime.py`: synchronous `aligned` decorator for saved functions.
+- `src/jev_align/capture.py`: bounded, best-effort JSONL capture of live predictions.
+- `src/jev_align/captured_inputs.py`: discovery and deduplication of captured inputs.
+
+Capture files are unlabeled observations, not run state. Never treat their model
+predictions as human labels. Resuming a saved function offers to sample matching
+captured calls from the current or run workspace's `.jev-align/captures/` and
+optional `JEVA_CAPTURE_DIR`. Resolve pending proposals first. Approved inputs
+are persisted in `captured-inputs.json` inside the run; treat this as application
+state. Human labels from captures join training, while the original fixed pool
+and holdout remain unchanged. Keep capture writes off the evaluation path and
+preserve bounded queues, file-size limits, and nonblocking overflow behavior.
+Original and captured pools share evaluation, prediction caching, and batch
+selection. Every unique eligible captured input remains in the active evaluation
+pool, including every labeled input. Filter labeled inputs only when selecting
+the next annotation batch. Report captured-pool uncertainty separately so
+original fixed-pool history stays comparable.
 
 TypeSafe JEV is currently the only included evaluation backend. Runs persist a
 provider-neutral backend configuration so additional adapters can be added;

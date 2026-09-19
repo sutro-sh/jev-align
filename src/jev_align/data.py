@@ -164,6 +164,14 @@ def source_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def prepare_fields(
+    row: Mapping[str, Any], columns: Iterable[str], *, concatenate: bool = False
+) -> dict[str, str]:
+    """Keep dataset loading and runtime calls identical at the backend boundary."""
+    values = {column: _field_text(row.get(column)) for column in columns}
+    return {"content": "\n".join(values.values())} if concatenate else values
+
+
 def load_stories(
     path: Path,
     limit: int = 1000,
@@ -182,8 +190,7 @@ def load_stories(
     for index, row in enumerate(_rows(path, selected), start=1):
         if len(stories) >= limit:
             break
-        values = {column: _field_text(row.get(column)) for column in selected}
-        fields = {"content": "\n".join(values.values())} if concatenate else values
+        fields = prepare_fields(row, selected, concatenate=concatenate)
         stories.append(Story(id=f"row-{index:06d}", row_number=index, fields=fields))
     if not stories:
         raise ValueError("dataset contains no data rows")

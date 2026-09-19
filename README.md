@@ -99,6 +99,95 @@ jeva functions
 jeva optimize --resume .jev-align/runs/<run-id>
 ```
 
+## Calling a saved function from Python
+
+Install `jev-align` in your application's Python environment as well as the CLI
+environment. The synchronous `aligned` decorator loads the current saved
+definition once and turns a function returning input fields into a JEV call:
+
+```python
+from jev_align import Capture, aligned
+
+# Create one recorder for the application's lifetime, inside each worker process.
+with Capture(ambiguity_threshold=0.8, audit_rate=0.05) as captures:
+    @aligned(".jev-align/runs/<run-id>", capture=captures)
+    def is_aviation(title, text):
+        return {"title": title, "text": text}
+
+    prediction = is_aviation("Airport expansion", "A new runway opens next year.")
+    print(prediction.probability >= 0.5)
+
+print(captures.path)
+print(captures.stats)  # written, dropped, error
+```
+
+Use the input columns configured in your saved run. Column selection, text
+normalization, and concatenation match dataset evaluation. The return value is
+a provider-neutral `Prediction`: binary tasks expose `probability`, multiclass
+tasks `choice` and `confidence`, multilabel tasks `label_probabilities`, and
+score tasks `score` and `confidence`. Only `TYPESAFE_API_KEY` is needed for these
+calls; reflection is not involved. Pending proposals are never used. Recreate
+the decorated function to load a newly accepted definition. A run that has not
+accepted a proposal still uses its original seed definition.
+
+Omit `capture=captures` to evaluate without recording. Capture makes no extra JEV
+requests and does not retry evaluations. It keeps predictions with ambiguity
+at least 0.8, plus a random 5% of the remaining calls. For binary tasks, that
+threshold corresponds to probabilities from 0.4 through 0.6. Captures contain
+the evaluated input, prediction, definition, model provenance, and selection
+reason; they never become human labels automatically.
+
+Capture uses JSONL files under `.jev-align/captures/`, with no database or
+server. Records are serialized in the caller and offered to a bounded queue;
+one background thread writes batches of up to 64 records, flushing roughly
+every 250 ms. Defaults are 256 queued records, 64 KiB per record, and 64 MiB
+per capture file. Full queues, oversized records, and exhausted file budgets
+drop captures and increment `dropped`. Disk errors disable the writer, log one
+warning, and populate `error`; successful predictions still return. Limits are
+per `Capture` instance, with a separate file for each instance. Files from
+previous instances are retained; there is no automatic rotation or cleanup.
+
+Use a context manager or call `captures.close()` at shutdown to drain the queue
+(up to five seconds). Abrupt exits can lose buffered records. This first
+version supports synchronous calls only and does not limit your application's
+JEV request concurrency.
+
+To label captured inputs later, open the saved function and select **Resume
+learning**:
+
+```shell
+jeva functions
+```
+
+When new matching calls are available, the CLI offers to use them. Choose yes to
+retain every previously labeled capture, import every unique eligible unlabeled
+input, and refresh their uncertainty under the current definition.
+Each labeling batch includes ambiguous examples and a random audit sample.
+Smaller final batches are supported. Choose no to continue with the previously
+approved pool, or the original dataset when no captured pool has been approved.
+
+Captured inputs use the same full-pool evaluation, caching, and batch-selection
+logic as the original dataset. Labeled inputs stop being offered for annotation,
+but remain in the pool when proposed definitions are evaluated. Accepting a
+proposal reuses those predictions for the next batch. Reports show captured-pool
+uncertainty separately from the original fixed evaluation pool; both compare the
+same inputs before and after a proposal.
+
+The CLI looks in `.jev-align/captures/` under both the current working directory
+and the saved run's workspace. Set `JEVA_CAPTURE_DIR=/path/to/captures` to also
+search a custom location. Only calls matching the run are considered. Repeated
+inputs and inputs already in the original dataset (including holdout inputs) are
+excluded. Capture discovery itself makes no API calls. The scanner imports all
+complete records already written to disk; buffered, incomplete, malformed, and
+oversized records (over 1 MiB) are not imported.
+
+Approved inputs are saved separately inside the run before labeling, so they
+remain available even if the capture logs are later removed. New human labels
+join the existing training labels; prediction metadata never supplies labels.
+The original evaluation pool and holdout stay fixed, and proposed definitions
+still require acceptance. Pending proposals are reviewed before offering more
+captures. Direct `jeva optimize --resume RUN` uses the same prompt.
+
 ## Using a coding agent
 
 See [AGENTS.md](AGENTS.md) for detailed setup, provider configuration, CLI

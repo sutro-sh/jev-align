@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .models import LabelRecord, RunState
+from .models import LabelRecord, RunState, Story
 
 
 class RunStore:
@@ -15,6 +15,7 @@ class RunStore:
         self.directory = directory
         self.state_path = directory / "state.json"
         self.labels_path = directory / "labels.jsonl"
+        self.captured_inputs_path = directory / "captured-inputs.json"
         self.gepa_output_dir = directory / "gepa-output"
         self.gepa_run_dir = directory / "gepa-runs"
 
@@ -43,6 +44,27 @@ class RunStore:
             handle.write(record.model_dump_json() + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+
+    def load_captured_inputs(self) -> list[Story]:
+        # Existing runs predate capture support and need no supplemental inputs.
+        if not self.captured_inputs_path.exists():
+            return []
+        payload = json.loads(self.captured_inputs_path.read_text(encoding="utf-8"))
+        if payload.get("version") != 1:
+            raise ValueError("unsupported captured-inputs version")
+        return [Story.model_validate(row) for row in payload["stories"]]
+
+    def save_captured_inputs(self, stories: list[Story]) -> None:
+        payload = {"version": 1, "stories": [story.model_dump() for story in stories]}
+        with NamedTemporaryFile(
+            "w", encoding="utf-8", dir=self.directory, delete=False
+        ) as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        os.replace(temporary, self.captured_inputs_path)
 
     def pop_last_label(self, *, story_id: str, round_number: int) -> LabelRecord:
         records = self.load_labels()
@@ -80,12 +102,14 @@ class RunStore:
             self.directory / "rewinds" / f"{timestamp}-from-round-{from_round:04d}"
         )
         archive.mkdir(parents=True)
-        for path in (self.state_path, self.labels_path):
+        for path in (self.state_path, self.labels_path, self.captured_inputs_path):
             if path.exists():
                 shutil.copy2(path, archive / path.name)
         for cache_name in (
             "pool-predictions-current.json",
             "pool-predictions-pending.json",
+            "capture-predictions-current.json",
+            "capture-predictions-pending.json",
         ):
             path = self.directory / cache_name
             if path.exists():

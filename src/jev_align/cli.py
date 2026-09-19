@@ -29,6 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .acquisition import ambiguity, ambiguity_summary, prediction_ambiguity
+from .captured_inputs import sample_captured_inputs
 from .data import (
     dataset_columns,
     dataset_row_count,
@@ -1757,6 +1758,27 @@ def _show_report(session: ClimbSession, report: RoundReport) -> None:
         )
     console.print(ambiguity)
     if (
+        report.previous_capture_ambiguity is not None
+        and report.proposed_capture_ambiguity is not None
+    ):
+        captured = Table(title="Captured-pool ambiguity (same inputs before and after)")
+        captured.add_column("Metric")
+        captured.add_column("Current", justify="right")
+        captured.add_column("Proposed", justify="right")
+        captured.add_column("Change", justify="right")
+        for key in ("count", "mean", "median", "at_least_0_5", "at_least_0_8"):
+            captured.add_row(
+                key,
+                _ambiguity_value(key, report.previous_capture_ambiguity[key]),
+                _ambiguity_value(key, report.proposed_capture_ambiguity[key]),
+                _ambiguity_change(
+                    key,
+                    report.previous_capture_ambiguity[key],
+                    report.proposed_capture_ambiguity[key],
+                ),
+            )
+        console.print(captured)
+    if (
         report.previous_replay_ambiguity is not None
         and report.proposed_replay_ambiguity is not None
     ):
@@ -2021,6 +2043,49 @@ def _resume_saved_function(saved: SavedFunction) -> None:
     )
 
 
+def _offer_captured_calls(session: ClimbSession) -> None:
+    if session.state.pending_candidate is not None:
+        return
+    directories = {Path.cwd() / ".jev-align" / "captures"}
+    run_parent = session.store.directory.parent
+    if run_parent.name == "runs" and run_parent.parent.name == ".jev-align":
+        directories.add(run_parent.parent / "captures")
+    if custom_directory := os.environ.get("JEVA_CAPTURE_DIR"):
+        directories.add(Path(custom_directory).expanduser().resolve())
+    labeled_ids = {label.story_id for label in session.store.load_labels()}
+    labeled_captures = [
+        story for story in session.captured_stories if story.id in labeled_ids
+    ]
+    captured = sample_captured_inputs(
+        directories,
+        session.state,
+        excluded=session.stories,
+        saved=session.captured_stories,
+        required=labeled_captures,
+    )
+    if not captured:
+        return
+    saved_ids = {story.id for story in session.captured_stories}
+    new_count = sum(story.id not in saved_ids for story in captured)
+    if new_count == 0:
+        session.use_captured_inputs(captured)
+        return
+    choice = _select_option(
+        f"You have {new_count:,} new captured calls available "
+        f"({len(captured):,} inputs in the captured pool, including all previously "
+        "labeled captures). Use them?",
+        [("y", "Yes, use all captured calls"), ("n", "No, use the original dataset")],
+    )
+    if choice == "y":
+        session.use_captured_inputs(captured)
+        console.print(
+            "Using all captured calls with the current definition. "
+            "The original evaluation pool stays fixed."
+        )
+    elif session.captured_stories:
+        session.use_captured_inputs(session.captured_stories)
+
+
 @app.command("functions")
 def functions_command() -> None:
     """Browse, inspect, resume, or run saved AI Functions."""
@@ -2035,7 +2100,7 @@ def functions_command() -> None:
         action = _select_option(
             _function_name(selected),
             [
-                ("c", "Resume optimization"),
+                ("c", "Resume learning"),
                 ("s", "Show latest optimized"),
                 ("r", "Run on another dataset"),
                 ("b", "Back to AI Functions"),
@@ -2353,14 +2418,40 @@ def optimize(
             if not _decision_gate(session, RoundReport.from_dict(state.pending_report)):
                 return
 
+        if resume is not None:
+            _offer_captured_calls(session)
+
         while True:
             remaining = session.unlabeled_stories()
-            if len(remaining) < state.batch_size:
-                console.print("The unlabeled pool is exhausted.")
+            if not remaining or (
+                session.capture_pool is None and len(remaining) < state.batch_size
+            ):
+                # A shutdown after the last label must not strand an otherwise
+                # complete round when the resumed acquisition pool is empty.
+                if session.ready_to_optimize() and any(
+                    label.round_number == state.round_number
+                    and label.evaluation_split == "train"
+                    for label in store.load_labels()
+                ):
+                    report = session.optimize(session.current_pool_predictions())
+                    if not _decision_gate(session, report):
+                        return
+                    continue
+                console.print(
+                    "The captured sample is exhausted. Resume learning to sample more calls."
+                    if session.capture_pool is not None
+                    else "The unlabeled pool is exhausted."
+                )
                 return
+            active_pool = (
+                session.capture_pool
+                if session.capture_pool is not None else session.stories
+            )
             console.print(
-                f"\n[bold]Round {state.round_number}[/bold]: evaluating "
-                f"{len(remaining)} unlabeled stories with "
+                f"\n[bold]Round {state.round_number}[/bold]: "
+                f"{len(active_pool):,} inputs in the full "
+                f"{'captured' if session.capture_pool is not None else 'original'} pool "
+                f"({len(remaining):,} unlabeled), using "
                 f"{state.backend.provider}/{state.backend.model}..."
             )
             acquisitions, pool_predictions = session.acquire()
