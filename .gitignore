@@ -1,0 +1,12 @@
+.DS_Store
+.coverage
+.env
+.env.*
+!.env.example
+.envrc
+.jev-align/
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+dist/

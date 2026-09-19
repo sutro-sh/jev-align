@@ -1,0 +1,141 @@
+# AGENTS.md
+
+This repository contains `jev-align`, an interactive active-learning CLI for
+building AI Functions from a user's judgments. Coding agents may help configure
+and operate the workflow, but must preserve the human labeling loop.
+
+## Operating the CLI for a user
+
+### Core rule
+
+The user supplies every label. Do not skip examples, silently infer labels, or
+accept an optimized definition on the user's behalf. A rationale is optional,
+but encourage one when it explains an important boundary or corrects the
+model's reasoning.
+
+### Before starting
+
+1. Confirm that `TYPESAFE_API_KEY` is available.
+2. Confirm a reflection-provider key is available: `OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`, or `GEMINI_API_KEY`.
+3. Identify the intended CSV, Parquet, or JSONL file without modifying it.
+4. Establish the question, task type, input columns, and labels or score levels.
+5. If any choice would materially change the task semantics, ask the user.
+
+Never display secret values. It is enough to report whether a required key is
+configured.
+
+### Starting a run
+
+Use the guided home screen when the user wants to choose interactively:
+
+```shell
+./jev-align
+```
+
+Use flags when the setup is already known:
+
+```shell
+./jev-align optimize DATA \
+  --question "QUESTION" \
+  --column COLUMN
+```
+
+Relevant task shapes:
+
+- Binary: provide `--question`; optionally add concrete `--true-criteria` and
+  `--false-criteria`.
+- Multiclass: repeat `--class "NAME=DESCRIPTION"` for mutually exclusive
+  labels.
+- Multilabel: repeat `--class "NAME=DESCRIPTION"` and add `--multilabel`.
+- Score: repeat `--score-level "DESCRIPTION"` in lowest-to-highest order.
+
+Use `--all-columns-concatenated` only when every field is useful. Prefer
+explicit `--column` values when IDs, timestamps, or metadata could distract the
+evaluator. The normal default is the first 1,000 rows or all rows for a smaller
+dataset; only set `--pool-size` when the user wants a different limit.
+
+Run the CLI in a real PTY when possible so arrow-key menus, progress displays,
+and prompts work correctly.
+
+### Labeling rounds
+
+For each displayed item:
+
+1. Relay the content and choices clearly if the user cannot see the terminal.
+2. Mention its uncertainty and whether it is a random audit sample.
+3. Ask the user for the label.
+4. Ask for an optional rationale, especially on ambiguous or surprising cases.
+5. Enter exactly what the user chose.
+
+There is no skip action. At the label picker, `b` removes the previous answer
+and moves backward. At the rationale prompt, `/back` returns to the current
+label picker; a literal `b` is valid rationale text. At the first item of a
+later round, `b` can rewind the prior optimization round after confirmation.
+
+For multilabel tasks, use Up/Down to navigate, Space to toggle, and Enter to
+confirm. An empty selection is a valid judgment.
+
+### Reviewing a GEPA proposal
+
+After optimization, summarize for the user:
+
+- The task metric before and after.
+- The fixed-pool certainty before and after.
+- Any regression, even when the task metric improved.
+- The material changes in the proposed definition.
+
+Then ask the user whether to accept, reject, or quit and resume later. Do not
+treat a higher training score as automatic approval. The score uses accumulated
+labels and is not a held-out generalization estimate.
+
+### Existing runs
+
+Browse saved AI Functions with:
+
+```shell
+./jev-align functions
+```
+
+Resume a known run directly with:
+
+```shell
+./jev-align optimize --resume .jev-align/runs/RUN_ID
+```
+
+Saved state, labels, prediction caches, GEPA artifacts, and rewind archives live
+inside the run directory. Treat them as application state: do not hand-edit,
+delete, or replace them. If a run is pending at the proposal screen, resume that
+decision rather than starting another optimization.
+
+## Helping develop the repository
+
+The main modules are:
+
+- `src/jev_align/cli.py`: interactive flows, rendering, and commands.
+- `src/jev_align/session.py`: round lifecycle, caching, rewind, and decisions.
+- `src/jev_align/optimizer.py`: GEPA integration and task metrics.
+- `src/jev_align/backends.py`: provider-neutral backend contract and factory.
+- `src/jev_align/jev.py`: TypeSafe JEV adapter.
+- `src/jev_align/models.py`: persisted schemas and normalized predictions.
+- `src/jev_align/persistence.py`: run and label storage.
+
+Preserve these product invariants when making changes:
+
+- The human explicitly confirms every label.
+- Proposed prompts are shown as a diff before acceptance.
+- The accepted candidate seeds the next optimization round.
+- Full-pool uncertainty remains comparable across rounds.
+- Old run state remains loadable through explicit migrations.
+- Backends must declare supported task types and usable uncertainty signals.
+- Provider-specific SDK objects do not cross the backend boundary.
+
+Before handing off a code change, run:
+
+```shell
+uv run --no-active --quiet pytest
+uv run --no-active --quiet ruff check src tests
+```
+
+Do not perform live API evaluations unless the user explicitly asks; the normal
+test suite is designed to run without them.
