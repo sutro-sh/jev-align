@@ -19,6 +19,8 @@ export OPENAI_API_KEY="..." # or ANTHROPIC_API_KEY / GEMINI_API_KEY
 jeva
 ```
 
+Start the CLI with either `jeva` or `jev-align`.
+
 Use `pip install jev-align` if you do not use
 [uv](https://docs.astral.sh/uv/). The guided setup discovers local CSV,
 Parquet, and JSONL files and includes three ready-to-run examples.

@@ -1,0 +1,60 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jev-align
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.11
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version="$(uv version --short)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_NAME}" != v* || "${tag_version}" != "${package_version}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+            exit 1
+          fi
+
+      - name: Install development dependencies
+        run: uv sync --locked --extra dev --python 3.11
+
+      - name: Run tests
+        run: uv run --no-active --quiet pytest
+
+      - name: Run lint
+        run: uv run --no-active --quiet ruff check src tests
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

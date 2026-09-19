@@ -229,3 +229,25 @@ uv run --no-active --quiet ruff check src tests
 
 Do not perform live API evaluations unless the user explicitly asks; the normal
 test suite is designed to run without them.
+
+## Publishing a release
+
+`pyproject.toml` is the authoritative version source. Prepare a release with:
+
+```shell
+uv version 0.1.0
+git add pyproject.toml uv.lock
+git commit -m "release 0.1.0"
+make release VERSION=0.1.0
+```
+
+The Make target requires a clean worktree, verifies the configured version,
+runs tests and lint, builds both distributions, and runs `twine check`. It then
+pushes an annotated `v<VERSION>` tag and creates a GitHub Release with generated
+notes. Publishing is not performed from the developer machine.
+
+Publishing the GitHub Release triggers `.github/workflows/publish.yml`. The
+workflow repeats validation from the tagged commit and publishes through PyPI
+Trusted Publishing. Its PyPI publisher must be configured for the
+`sutro-sh/jev-align` repository, `publish.yml` workflow, and `pypi` environment.
+No PyPI token should be added to the repository or GitHub secrets.
