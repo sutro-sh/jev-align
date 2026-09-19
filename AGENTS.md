@@ -241,6 +241,46 @@ the process or recreate the decorated function to use a newly accepted version.
 Use `JEVA_CAPTURE_DIR` when the application and CLI need to share a capture
 directory outside the workspace.
 
+The decorator applies the saved run's column selection, normalization, and
+concatenation. Its return value is a provider-neutral `Prediction`: binary tasks
+expose `probability`, multiclass tasks `choice` and `confidence`, multilabel
+tasks `label_probabilities`, and score tasks `score` and `confidence`. Runtime
+calls require `TYPESAFE_API_KEY`, but not a reflection-model key. Pending
+proposals are never loaded. A run with no accepted proposal uses its seed
+definition.
+
+Capture makes no additional JEV request and does not retry evaluations. By
+default it records predictions with ambiguity of at least 0.8 and a random 5%
+audit of the remainder. For binary tasks, 0.8 ambiguity corresponds to
+probabilities from 0.4 through 0.6. Each record includes the evaluated input,
+prediction, definition, model provenance, and selection reason, but none of
+those values constitute a human label.
+
+Capture uses JSONL files under `.jev-align/captures/`; it requires no database or
+server. Records enter a bounded queue and a background thread writes batches of
+up to 64, flushing about every 250 ms. Defaults are 256 queued records, 64 KiB
+per record, and 64 MiB per capture file. Full queues, oversized records, and
+exhausted file budgets increment `dropped`. Disk errors disable that writer, log
+one warning, and populate `error` without failing successful predictions. Limits
+and files are per `Capture` instance, so create one inside each worker after
+forking. Existing files are not rotated or deleted automatically. Closing drains
+the queue for up to five seconds; abrupt shutdown can lose buffered records.
+
+On resume, the CLI searches `.jev-align/captures/` in the current workspace and
+the run workspace, plus `JEVA_CAPTURE_DIR` when configured. It imports complete,
+matching records already on disk, deduplicates repeated inputs, excludes the
+original and holdout datasets, and ignores malformed, partial, or over-1-MiB
+lines. Discovery itself makes no API call. Approved captured inputs are also
+stored in the run's `captured-inputs.json`, so removing the raw logs does not
+remove them from that run.
+
+Captured inputs use the normal full-pool evaluation, prediction cache, and batch
+selection. Human labels from captures join training, while the original pool and
+holdout remain fixed. Reports show captured-pool uncertainty separately so the
+original fixed-pool history remains comparable. Pending GEPA proposals must be
+resolved before importing new captures, and every new proposal still requires
+explicit human acceptance.
+
 ## Helping develop the repository
 
 The main modules are:
