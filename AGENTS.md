@@ -4,6 +4,28 @@ This repository contains `jev-align`, an interactive active-learning CLI for
 building AI Functions from a user's judgments. Coding agents may help configure
 and operate the workflow, but must preserve the human labeling loop.
 
+## Installation reference
+
+Requires Python 3.11 or newer. For a released build, prefer an isolated CLI
+installation:
+
+```shell
+uv tool install jev-align
+# Without uv:
+pip install jev-align
+```
+
+From a local checkout, use `uv tool install .`; after pulling or changing the
+source, refresh it with `uv tool install --force .`. To install straight from
+GitHub, use `uv tool install "git+https://github.com/sutro-sh/jev-align.git"`.
+For editable development, run `uv sync --extra dev` and launch with
+`uv run jeva`.
+
+Both `jeva` and `jev-align` invoke the same CLI. Interactive, non-editable
+installs check PyPI for newer releases at startup. In virtual environments the
+updater prefers `uv pip` when available and falls back to that environment's
+Python and pip. Set `JEVA_DISABLE_UPDATE_CHECK=1` to disable the check.
+
 ## Operating the CLI for a user
 
 ### Core rule
@@ -16,8 +38,9 @@ model's reasoning.
 ### Before starting
 
 1. Confirm that `TYPESAFE_API_KEY` is available.
-2. Confirm a reflection-provider key is available: `OPENAI_API_KEY`,
-   `ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`, or `GEMINI_API_KEY`.
+2. Confirm a reflection provider is configured: `OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`, `GEMINI_API_KEY`, or the endpoint and
+   credentials required by a custom LiteLLM provider.
 3. Identify the intended CSV, Parquet, or JSONL file without modifying it.
 4. Establish the question, task type, input columns, and labels or score levels.
 5. If any choice would materially change the task semantics, ask the user.
@@ -50,6 +73,10 @@ Relevant task shapes:
 - Multilabel: repeat `--class "NAME=DESCRIPTION"` and add `--multilabel`.
 - Score: repeat `--score-level "DESCRIPTION"` in lowest-to-highest order.
 
+The installed package includes preconfigured Hacker News, support-ticket, and
+agent-trace examples. The guided dataset picker lists those first, followed by
+CSV, Parquet, and JSONL files discovered below the current directory.
+
 Use `--batch-size` to choose the number of training annotations per round. The
 guided Advanced menu offers 5, 10, 15, or 20. Add `--holdout` only when the user
 wants a 20% reserved evaluation split; this adds 20% extra held-out annotations
@@ -64,6 +91,51 @@ dataset; only set `--pool-size` when the user wants a different limit.
 
 Run the CLI in a real PTY when possible so arrow-key menus, progress displays,
 and prompts work correctly.
+
+### Reflection providers
+
+GEPA's reflection model is separate from the TypeSafe JEV evaluation model.
+Reflection uses LiteLLM model identifiers. OpenAI, Anthropic, and Gemini are
+listed automatically when their standard keys are present. For another
+provider, pass `--reflection-model provider/model`; in the wizard select
+**Choose a different model** and then **Enter a custom LiteLLM model**.
+
+Fireworks example:
+
+```shell
+export FIREWORKS_API_KEY="..."
+jeva optimize DATA \
+  --question "QUESTION" \
+  --column COLUMN \
+  --reflection-model \
+    "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"
+```
+
+For a local or hosted vLLM server exposing an OpenAI-compatible `/v1` API:
+
+```shell
+export HOSTED_VLLM_API_BASE="http://localhost:8000/v1"
+export HOSTED_VLLM_API_KEY="..." # Omit when the endpoint has no authentication.
+jeva optimize DATA \
+  --question "QUESTION" \
+  --column COLUMN \
+  --reflection-model "hosted_vllm/Qwen/Qwen3-8B"
+```
+
+For a generic OpenAI-compatible endpoint:
+
+```shell
+export OPENAI_API_BASE="http://localhost:8000/v1"
+export OPENAI_API_KEY="local" # Replace when the endpoint requires a real key.
+jeva optimize DATA \
+  --question "QUESTION" \
+  --column COLUMN \
+  --reflection-model "openai/Qwen/Qwen3-8B"
+```
+
+The provider/model identifier and environment variables must follow the
+[LiteLLM provider configuration](https://docs.litellm.ai/docs/providers).
+`TYPESAFE_API_KEY` remains required for JEV evaluation.
 
 ### Labeling rounds
 
@@ -119,6 +191,9 @@ inside the run directory. Treat them as application state: do not hand-edit,
 delete, or replace them. If a run is pending at the proposal screen, resume that
 decision rather than starting another optimization.
 
+Running an accepted function on another dataset writes JSONL results to
+`.jev-align/outputs/` without changing the saved function.
+
 ## Helping develop the repository
 
 The main modules are:
@@ -130,6 +205,10 @@ The main modules are:
 - `src/jev_align/jev.py`: TypeSafe JEV adapter.
 - `src/jev_align/models.py`: persisted schemas and normalized predictions.
 - `src/jev_align/persistence.py`: run and label storage.
+
+TypeSafe JEV is currently the only included evaluation backend. Runs persist a
+provider-neutral backend configuration so additional adapters can be added;
+`--jev-model` remains a compatibility alias for `--backend-model`.
 
 Preserve these product invariants when making changes:
 

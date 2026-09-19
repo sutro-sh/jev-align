@@ -442,9 +442,28 @@ def _show_startup_banner() -> None:
     )
 
 
+def _packaged_example_directory() -> Path:
+    return Path(__file__).resolve().parent / "sample_data"
+
+
+def _packaged_example_paths() -> list[Path]:
+    directory = _packaged_example_directory()
+    return [
+        path
+        for preset in EXAMPLE_PRESETS
+        if (path := directory / preset.filename).is_file()
+    ]
+
+
 def _example_preset_for_path(path: Path, root: Path) -> ExamplePreset | None:
+    resolved = path.resolve()
+    if resolved.parent == _packaged_example_directory().resolve():
+        return next(
+            (preset for preset in EXAMPLE_PRESETS if preset.filename == path.name),
+            None,
+        )
     try:
-        relative = path.resolve().relative_to(root.resolve())
+        relative = resolved.relative_to(root.resolve())
     except ValueError:
         return None
     if len(relative.parts) != 2 or relative.parts[0] != "sample_data":
@@ -733,6 +752,16 @@ def _choose_reflection_model() -> str:
 
 def _choose_dataset(root: Path) -> Path:
     discovered = discover_datasets(root)
+    local_examples = {
+        preset.filename
+        for path in discovered
+        if (preset := _example_preset_for_path(path, root)) is not None
+    }
+    discovered.extend(
+        path
+        for path in _packaged_example_paths()
+        if path.name not in local_examples
+    )
     preset_rank = {preset.filename: index for index, preset in enumerate(EXAMPLE_PRESETS)}
     discovered.sort(
         key=lambda path: (
@@ -749,10 +778,14 @@ def _choose_dataset(root: Path) -> Path:
         options = []
         for index, path in enumerate(discovered, start=1):
             preset = _example_preset_for_path(path, root)
+            try:
+                display_path = str(path.relative_to(root))
+            except ValueError:
+                display_path = "included"
             label = (
-                f"Example · {preset.name} ({path.relative_to(root)})"
+                f"Example · {preset.name} ({display_path})"
                 if preset is not None
-                else str(path.relative_to(root))
+                else display_path
             )
             options.append((str(index), label))
         options.append(("m", "Enter another path…"))

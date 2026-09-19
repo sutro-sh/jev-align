@@ -33,6 +33,8 @@ from typer.testing import CliRunner
 
 from jev_align import cli
 
+SAMPLE_DATA = cli._packaged_example_directory()
+
 
 def test_menu_labels_are_rendered_literally() -> None:
     rendered = _menu_render("Label", [("t", "True"), ("f", "False")], 0)
@@ -511,7 +513,7 @@ def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", fake_climb)
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -555,7 +557,7 @@ def test_wizard_advanced_settings_enable_larger_batches_and_holdout(
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
 
     result = CliRunner().invoke(
@@ -602,7 +604,7 @@ def test_wizard_can_select_first_n_rows(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -622,7 +624,7 @@ def test_wizard_can_select_specific_columns(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", fake_climb)
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -643,7 +645,7 @@ def test_wizard_can_choose_a_different_reflection_model(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", fake_climb)
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -711,7 +713,7 @@ def test_wizard_builds_multiclass_definition(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", fake_climb)
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -738,7 +740,7 @@ def test_wizard_builds_multilabel_definition(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -763,7 +765,7 @@ def test_wizard_builds_score_definition(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
     monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
     monkeypatch.setattr(
-        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
     )
     result = CliRunner().invoke(
         cli.app,
@@ -808,9 +810,31 @@ def test_example_datasets_are_marked_and_ordered(monkeypatch, tmp_path: Path) ->
     ]
 
 
+def test_packaged_examples_are_offered_without_local_datasets(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured = []
+    monkeypatch.setattr(cli, "discover_datasets", lambda _root: [])
+
+    def select_first(_prompt, options):
+        captured.extend(options)
+        return "1"
+
+    monkeypatch.setattr(cli, "_select_option", select_first)
+
+    selected = cli._choose_dataset(tmp_path)
+
+    assert selected == SAMPLE_DATA / "hn-stories.csv"
+    assert [label for _, label in captured[:3]] == [
+        "Example · Hacker News posts (included)",
+        "Example · Support tickets (included)",
+        "Example · Agent traces (included)",
+    ]
+
+
 def test_example_datasets_use_preconfigured_flows(monkeypatch) -> None:
     captured = []
-    selected_path = {"value": Path("sample_data/hn-stories.csv").resolve()}
+    selected_path = {"value": (SAMPLE_DATA / "hn-stories.csv").resolve()}
     monkeypatch.setattr(cli, "_choose_dataset", lambda _root: selected_path["value"])
     monkeypatch.setattr(cli, "_choose_pool_size", lambda _path: 500)
     monkeypatch.setattr(
@@ -824,7 +848,7 @@ def test_example_datasets_use_preconfigured_flows(monkeypatch) -> None:
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.append(kwargs))
 
     for filename in ("hn-stories.csv", "support-tickets.csv", "agent-traces.csv"):
-        selected_path["value"] = (Path("sample_data") / filename).resolve()
+        selected_path["value"] = (SAMPLE_DATA / filename).resolve()
         cli._new_run_wizard()
 
     hacker_news, support, traces = captured
