@@ -12,12 +12,73 @@ It's last-mile, feedback-driven fine-tuning, for Jev.
 
 Requires Python 3.11 or newer.
 
+### Install the current checkout
+
+The recommended option is an isolated global installation with
+[uv](https://docs.astral.sh/uv/):
+
+```shell
+git clone git@github.com:sutro-sh/jev-align.git
+cd jev-align
+uv tool install .
+jeva
+```
+
+After changing or pulling the local source, reinstall it with:
+
+```shell
+uv tool install --force .
+```
+
+You can use pip instead:
+
+```shell
+pip install .
+jeva
+```
+
+To install the latest source directly from GitHub without cloning it first:
+
+```shell
+uv tool install "git+https://github.com/sutro-sh/jev-align.git"
+# Or: pip install "git+https://github.com/sutro-sh/jev-align.git"
+```
+
+After the first PyPI release, install it by package name:
+
+```shell
+uv tool install jev-align
+# Or: pip install jev-align
+```
+
+### Develop locally
+
+For an editable development environment:
+
 ```shell
 uv sync --extra dev
-export TYPESAFE_API_KEY="..."
-export OPENAI_API_KEY="..." # or an Anthropic/Gemini key for GEPA reflection
-./jev-align
+uv run jeva
 ```
+
+### Configure and launch
+
+Set a TypeSafe key and at least one reflection-provider key:
+
+```shell
+export TYPESAFE_API_KEY="..."
+export OPENAI_API_KEY="..." # or ANTHROPIC_API_KEY / GEMINI_API_KEY
+jeva
+```
+
+Both `jeva` and `jev-align` start the same CLI; the shorter `jeva` command is
+used below.
+
+Interactive starts check PyPI for a newer release. When one is available, press
+Enter to install it into the current Python environment, then restart `jeva`.
+Inside a virtual environment, `jeva` prefers `uv pip` when `uv` is available
+and falls back to that environment's Python and pip. Editable development
+installs and non-interactive commands skip this check. Set
+`JEVA_DISABLE_UPDATE_CHECK=1` to disable it explicitly.
 
 The home screen lets you:
 
@@ -40,7 +101,15 @@ Each round:
 
 The default pool is the first 1,000 rows, or the whole dataset when it contains
 fewer than 1,000 rows. Scores describe fit against collected labels, not
-held-out generalization.
+held-out generalization unless the optional held-out evaluation is enabled.
+
+Before creating a function, choose **Advanced** to collect 5, 10, 15, or 20
+training annotations per round. You can also reserve 20% of the dataset as a
+held-out evaluation set. When enabled, each round adds another 20% as many
+held-out annotations—for example, 10 training annotations plus 2 held-out
+annotations. Held-out labels never enter GEPA and are scored separately as the
+function evolves. Advanced also lets you change the maximum GEPA metric calls
+per round from its default of 300.
 
 ## Task types
 
@@ -56,7 +125,7 @@ held-out generalization.
 The setup can also be supplied on the command line:
 
 ```shell
-./jev-align optimize posts.csv \
+jeva optimize posts.csv \
   --question "Is the post related to aviation?" \
   --column title \
   --column text \
@@ -67,8 +136,11 @@ For multiclass or multilabel tasks, repeat
 `--class "NAME=DESCRIPTION"`. Add `--multilabel` when labels may overlap. For
 an ordered score, repeat `--score-level` from lowest to highest.
 
-Run `./jev-align optimize --help` for every setup flag. Flags configure a run;
+Run `jeva optimize --help` for every setup flag. Flags configure a run;
 human labeling and proposal acceptance remain interactive by design.
+Use `--holdout` to enable the same 20% held-out evaluation in a scripted setup.
+Use `--max-metric-calls` to change GEPA's per-round budget;
+`--metric-budget` remains a compatibility alias.
 
 ## Controls
 
@@ -85,8 +157,8 @@ encouraged because GEPA uses them as boundary guidance.
 Runs are stored in `.jev-align/runs/`.
 
 ```shell
-./jev-align functions
-./jev-align optimize --resume .jev-align/runs/<run-id>
+jeva functions
+jeva optimize --resume .jev-align/runs/<run-id>
 ```
 
 Running an accepted function on another dataset writes JSONL results to

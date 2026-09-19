@@ -238,7 +238,8 @@ class LabelRecord(BaseModel):
     label: bool | int | str | list[str]
     rationale: str | None = None
     round_number: int
-    acquired_by: Literal["ambiguous", "exploration"]
+    acquired_by: Literal["ambiguous", "exploration", "holdout"]
+    evaluation_split: Literal["train", "holdout"] = "train"
     acquisition_probability: float
     resolved_model: str | None = None
     created_at: str = Field(
@@ -421,6 +422,7 @@ class CandidateHistory(BaseModel):
     candidate: TaskSpec
     decision: Literal["seed", "accepted", "rejected"]
     fit_f1: float | None = None
+    holdout_score: float | None = None
 
 
 class BackendConfig(BaseModel):
@@ -440,7 +442,7 @@ class BackendConfig(BaseModel):
 
 
 class RunState(BaseModel):
-    version: int = 2
+    version: int = 3
     run_id: str
     source_path: str
     source_sha256: str
@@ -453,6 +455,8 @@ class RunState(BaseModel):
     metric_budget: int = 300
     concurrency: int = 16
     batch_size: int = 5
+    holdout_fraction: float = 0.0
+    holdout_story_ids: list[str] = Field(default_factory=list)
     binary_true_label: str = "True"
     binary_false_label: str = "False"
     round_number: int = 1
@@ -464,15 +468,18 @@ class RunState(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_backend(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "backend" in value:
+        if not isinstance(value, dict):
             return value
         migrated = dict(value)
-        migrated["backend"] = {
-            "provider": "typesafe",
-            "model": migrated.pop("jev_model", "jev-1.13.0"),
-            "options": {},
-        }
-        migrated["version"] = 2
+        if "backend" not in migrated:
+            migrated["backend"] = {
+                "provider": "typesafe",
+                "model": migrated.pop("jev_model", "jev-1.13.0"),
+                "options": {},
+            }
+        migrated.setdefault("holdout_fraction", 0.0)
+        migrated.setdefault("holdout_story_ids", [])
+        migrated["version"] = 3
         return migrated
 
     @model_validator(mode="after")
@@ -481,4 +488,16 @@ class RunState(BaseModel):
         if not all(labels) or labels[0].casefold() == labels[1].casefold():
             raise ValueError("binary presentation labels must be nonempty and distinct")
         self.binary_true_label, self.binary_false_label = labels
+        if self.holdout_fraction not in {0.0, 0.2}:
+            raise ValueError("holdout fraction must be zero or 0.2")
+        if self.holdout_fraction == 0.0 and self.holdout_story_ids:
+            raise ValueError("holdout story IDs require a holdout fraction")
+        if len(self.holdout_story_ids) != len(set(self.holdout_story_ids)):
+            raise ValueError("holdout story IDs must be unique")
         return self
+
+    @property
+    def holdout_batch_size(self) -> int:
+        if self.holdout_fraction == 0.0:
+            return 0
+        return max(1, round(self.batch_size * self.holdout_fraction))

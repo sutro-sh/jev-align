@@ -3,11 +3,12 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .acquisition import ambiguity_summary, select_batch
+from .acquisition import Acquisition, ambiguity_summary, select_batch
 from .backends import (
     EvaluationBackend,
     backend_display_name,
@@ -47,6 +48,8 @@ class RoundReport:
     ambiguity_scope: str = "fixed_full_pool"
     previous_replay_ambiguity: dict[str, float | int] | None = None
     proposed_replay_ambiguity: dict[str, float | int] | None = None
+    previous_holdout_metrics: ClassificationMetrics | None = None
+    proposed_holdout_metrics: ClassificationMetrics | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +64,16 @@ class RoundReport:
             "ambiguity_scope": self.ambiguity_scope,
             "previous_replay_ambiguity": self.previous_replay_ambiguity,
             "proposed_replay_ambiguity": self.proposed_replay_ambiguity,
+            "previous_holdout_metrics": (
+                self.previous_holdout_metrics.model_dump()
+                if self.previous_holdout_metrics is not None
+                else None
+            ),
+            "proposed_holdout_metrics": (
+                self.proposed_holdout_metrics.model_dump()
+                if self.proposed_holdout_metrics is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -90,6 +103,16 @@ class RoundReport:
             ambiguity_scope=value.get("ambiguity_scope", "remaining_unlabeled"),
             previous_replay_ambiguity=value.get("previous_replay_ambiguity"),
             proposed_replay_ambiguity=value.get("proposed_replay_ambiguity"),
+            previous_holdout_metrics=(
+                metrics_type.model_validate(value["previous_holdout_metrics"])
+                if value.get("previous_holdout_metrics") is not None
+                else None
+            ),
+            proposed_holdout_metrics=(
+                metrics_type.model_validate(value["proposed_holdout_metrics"])
+                if value.get("proposed_holdout_metrics") is not None
+                else None
+            ),
         )
 
 
@@ -125,6 +148,18 @@ def label_examples(labels: list[LabelRecord]) -> list[dict[str, Any]]:
     ]
 
 
+def primary_metric(metrics: ClassificationMetrics | None) -> float | None:
+    if metrics is None:
+        return None
+    if isinstance(metrics, ScoreMetrics):
+        return metrics.fit_score
+    if isinstance(metrics, MultilabelMetrics):
+        return metrics.micro_f1
+    if isinstance(metrics, MulticlassMetrics):
+        return metrics.macro_f1
+    return metrics.f1
+
+
 class ClimbSession:
     def __init__(
         self,
@@ -140,8 +175,30 @@ class ClimbSession:
         self.backend = backend
 
     def unlabeled_stories(self) -> list[Story]:
-        labeled = {record.story_id for record in self.store.load_labels()}
-        return [story for story in self.stories if story.id not in labeled]
+        labeled = {
+            record.story_id
+            for record in self.store.load_labels()
+            if record.evaluation_split == "train"
+        }
+        holdout = set(self.state.holdout_story_ids)
+        return [
+            story
+            for story in self.stories
+            if story.id not in labeled and story.id not in holdout
+        ]
+
+    def unlabeled_holdout_stories(self) -> list[Story]:
+        labeled = {
+            record.story_id
+            for record in self.store.load_labels()
+            if record.evaluation_split == "holdout"
+        }
+        holdout = set(self.state.holdout_story_ids)
+        return [
+            story
+            for story in self.stories
+            if story.id in holdout and story.id not in labeled
+        ]
 
     def _pool_cache_path(self, slot: Literal["current", "pending"]) -> Path:
         return self.store.directory / f"pool-predictions-{slot}.json"
@@ -227,9 +284,16 @@ class ClimbSession:
         # Score the frozen original pool every round. Labeled rows are removed
         # only from acquisition eligibility, not from longitudinal diagnostics.
         predictions = self.current_pool_predictions()
-        labeled_ids = {record.story_id for record in self.store.load_labels()}
+        labeled_ids = {
+            record.story_id
+            for record in self.store.load_labels()
+            if record.evaluation_split == "train"
+        }
+        holdout_ids = set(self.state.holdout_story_ids)
         unlabeled_predictions = [
-            item for item in predictions if item.story_id not in labeled_ids
+            item
+            for item in predictions
+            if item.story_id not in labeled_ids and item.story_id not in holdout_ids
         ]
         acquisitions = select_batch(
             unlabeled_predictions,
@@ -239,13 +303,35 @@ class ClimbSession:
         )
         return acquisitions, predictions
 
+    def acquire_holdout(
+        self, pool_predictions: list[Prediction]
+    ) -> list[Acquisition]:
+        count = min(
+            self.state.holdout_batch_size,
+            len(self.unlabeled_holdout_stories()),
+        )
+        if count == 0:
+            return []
+        unlabeled_ids = {story.id for story in self.unlabeled_holdout_stories()}
+        available = [
+            prediction
+            for prediction in pool_predictions
+            if prediction.story_id in unlabeled_ids
+        ]
+        rng = random.Random(self.state.seed + self.state.round_number)
+        return [
+            Acquisition(prediction, "holdout")
+            for prediction in rng.sample(available, count)
+        ]
+
     def add_label(
         self,
         *,
         story_id: str,
-        label: bool | str | list[str],
+        label: bool | int | str | list[str],
         rationale: str | None,
-        acquired_by: Literal["ambiguous", "exploration"],
+        acquired_by: Literal["ambiguous", "exploration", "holdout"],
+        evaluation_split: Literal["train", "holdout"] = "train",
         probability: float,
         resolved_model: str | None = None,
     ) -> LabelRecord:
@@ -255,6 +341,7 @@ class ClimbSession:
             rationale=rationale.strip() if rationale and rationale.strip() else None,
             round_number=self.state.round_number,
             acquired_by=acquired_by,
+            evaluation_split=evaluation_split,
             acquisition_probability=probability,
             resolved_model=resolved_model,
         )
@@ -298,7 +385,11 @@ class ClimbSession:
         return target_round, archive
 
     def ready_to_optimize(self) -> bool:
-        labels = self.store.load_labels()
+        labels = [
+            item
+            for item in self.store.load_labels()
+            if item.evaluation_split == "train"
+        ]
         if isinstance(
             self.state.current_candidate,
             (MultilabelCandidateSpec, ScoreCandidateSpec),
@@ -311,8 +402,13 @@ class ClimbSession:
         )
 
     def optimize(self, pool_predictions: list[Prediction]) -> RoundReport:
-        labels = self.store.load_labels()
+        all_labels = self.store.load_labels()
+        labels = [item for item in all_labels if item.evaluation_split == "train"]
+        holdout_labels = [
+            item for item in all_labels if item.evaluation_split == "holdout"
+        ]
         examples = label_examples(labels)
+        holdout_examples = label_examples(holdout_labels)
         previous_metrics, _ = evaluate_labeled_candidate(
             self.state.current_candidate, examples, self.story_by_id, self.backend
         )
@@ -332,6 +428,21 @@ class ClimbSession:
         proposed_metrics, _ = evaluate_labeled_candidate(
             outcome.candidate, examples, self.story_by_id, self.backend
         )
+        previous_holdout_metrics = None
+        proposed_holdout_metrics = None
+        if holdout_examples:
+            previous_holdout_metrics, _ = evaluate_labeled_candidate(
+                self.state.current_candidate,
+                holdout_examples,
+                self.story_by_id,
+                self.backend,
+            )
+            proposed_holdout_metrics, _ = evaluate_labeled_candidate(
+                outcome.candidate,
+                holdout_examples,
+                self.story_by_id,
+                self.backend,
+            )
 
         labeled_ids = {item.story_id for item in labels}
         proposed_pool = evaluate_with_progress(
@@ -358,6 +469,8 @@ class ClimbSession:
             configured_metric_budget=self.state.metric_budget,
             previous_replay_ambiguity=ambiguity_summary(previous_replay),
             proposed_replay_ambiguity=ambiguity_summary(proposed_replay),
+            previous_holdout_metrics=previous_holdout_metrics,
+            proposed_holdout_metrics=proposed_holdout_metrics,
         )
         self.state.pending_candidate = outcome.candidate
         self.state.pending_report = report.as_dict()
@@ -381,19 +494,8 @@ class ClimbSession:
                 round_number=self.state.round_number,
                 candidate=self.state.pending_candidate,
                 decision=history_decision,
-                fit_f1=(
-                    report.proposed_metrics.fit_score
-                    if isinstance(report.proposed_metrics, ScoreMetrics)
-                    else (
-                        report.proposed_metrics.micro_f1
-                        if isinstance(report.proposed_metrics, MultilabelMetrics)
-                        else (
-                            report.proposed_metrics.macro_f1
-                            if isinstance(report.proposed_metrics, MulticlassMetrics)
-                            else report.proposed_metrics.f1
-                        )
-                    )
-                ),
+                fit_f1=primary_metric(report.proposed_metrics),
+                holdout_score=primary_metric(report.proposed_holdout_metrics),
             )
         )
         self.state.pending_candidate = None

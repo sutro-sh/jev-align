@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
+import shutil
+import subprocess
 import sys
 import termios
 import tty
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Annotated
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import typer
+from packaging.version import InvalidVersion, Version
 from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
@@ -37,8 +44,9 @@ from .backends import (
     validate_backend_for_task,
 )
 from .models import (
-    CandidateHistory,
     BackendConfig,
+    BinaryMetrics,
+    CandidateHistory,
     CandidateSpec,
     MulticlassCandidateSpec,
     MulticlassMetrics,
@@ -58,6 +66,9 @@ from .session import ClimbSession, RoundReport, candidate_diff
 
 app = typer.Typer(no_args_is_help=False, pretty_exceptions_show_locals=False)
 console = Console()
+PYPI_PROJECT_NAME = "jev-align"
+PYPI_JSON_URL = f"https://pypi.org/pypi/{PYPI_PROJECT_NAME}/json"
+UPDATE_CHECK_TIMEOUT_SECONDS = 2.0
 DEFAULT_REFLECTION_MODEL = "openai/gpt-5.6-luna"
 ANTHROPIC_DEFAULT_REFLECTION_MODEL = "anthropic/claude-haiku-4-5-20251001"
 GEMINI_DEFAULT_REFLECTION_MODEL = "gemini/gemini-3.8-flash"
@@ -193,6 +204,8 @@ EXAMPLE_PRESETS = (
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     """Build and optimize AI Functions with pluggable evaluators and GEPA."""
+    if _maybe_offer_update():
+        raise typer.Exit()
     _configure_provider_key_aliases()
     if ctx.invoked_subcommand is None:
         _show_startup_banner()
@@ -202,12 +215,181 @@ def main(ctx: typer.Context) -> None:
                 ("n", "Optimize a new AI Function"),
                 ("e", "Show existing AI Functions"),
             ],
-            option_styles=["cyan", "magenta"],
         )
         if action == "e":
             functions_command()
         else:
             _new_run_wizard()
+
+
+def _installed_package() -> tuple[str, bool] | None:
+    """Return the installed version and whether this is an editable checkout."""
+    try:
+        package = distribution(PYPI_PROJECT_NAME)
+    except PackageNotFoundError:
+        return None
+
+    editable = False
+    direct_url = package.read_text("direct_url.json")
+    if direct_url:
+        try:
+            metadata = json.loads(direct_url)
+            editable = bool(metadata.get("dir_info", {}).get("editable"))
+        except (AttributeError, json.JSONDecodeError, TypeError):
+            pass
+    return package.version, editable
+
+
+def _latest_pypi_version(installed_version: str) -> str | None:
+    request = Request(
+        PYPI_JSON_URL,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": (
+                f"jeva/{installed_version} "
+                "(+https://github.com/sutro-sh/jev-align)"
+            ),
+        },
+    )
+    try:
+        with urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+        latest = payload["info"]["version"]
+        return latest if isinstance(latest, str) else None
+    except (
+        HTTPError,
+        URLError,
+        TimeoutError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def _update_checks_disabled() -> bool:
+    value = os.environ.get("JEVA_DISABLE_UPDATE_CHECK", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _running_in_virtual_environment() -> bool:
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    return sys.prefix != base_prefix
+
+
+def _upgrade_commands() -> list[list[str]]:
+    commands: list[list[str]] = []
+    uv = shutil.which("uv")
+    if uv is not None and _running_in_virtual_environment():
+        commands.append(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--upgrade",
+                PYPI_PROJECT_NAME,
+            ]
+        )
+    commands.append(
+        [sys.executable, "-m", "pip", "install", "--upgrade", PYPI_PROJECT_NAME]
+    )
+    return commands
+
+
+def _maybe_offer_update(*, interactive: bool | None = None) -> bool:
+    """Offer an in-place upgrade and return True when the process should exit."""
+    if _update_checks_disabled():
+        return False
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        return False
+
+    installed = _installed_package()
+    if installed is None:
+        return False
+    installed_version, editable = installed
+    if editable:
+        return False
+
+    latest_version = _latest_pypi_version(installed_version)
+    if latest_version is None:
+        return False
+    try:
+        update_available = Version(latest_version) > Version(installed_version)
+    except InvalidVersion:
+        return False
+    if not update_available:
+        return False
+
+    console.print(
+        Panel(
+            Group(
+                Text("A newer version of jev-align is available.", style="bold"),
+                Text.assemble(
+                    (installed_version, "yellow"),
+                    ("  →  ", "dim"),
+                    (latest_version, "bold bright_green"),
+                ),
+                Text("Press Enter to upgrade now.", style="dim"),
+            ),
+            title="[bold bright_cyan]Update available[/bold bright_cyan]",
+            border_style="bright_cyan",
+            padding=(1, 2),
+        )
+    )
+    choice = _select_option(
+        "Update jev-align?",
+        [("u", "Upgrade now (default)"), ("s", "Skip for now")],
+    )
+    if choice == "s":
+        return False
+
+    commands = _upgrade_commands()
+    upgraded = False
+    last_error: OSError | None = None
+    for index, command in enumerate(commands):
+        installer = "uv" if command[1:3] == ["pip", "install"] else "pip"
+        console.print(f"Upgrading jev-align with {installer}…", style="cyan")
+        last_error = None
+        try:
+            result = subprocess.run(command, check=False)
+        except OSError as error:
+            last_error = error
+            result = None
+        if result is not None and result.returncode == 0:
+            upgraded = True
+            break
+        if index < len(commands) - 1:
+            console.print("uv upgrade failed; trying pip…", style="yellow")
+
+    if not upgraded:
+        detail = (
+            f"Could not start the upgrade: {last_error}"
+            if last_error is not None
+            else "The upgrade command did not complete successfully."
+        )
+        manual_command = commands[-1]
+        console.print(
+            Panel(
+                f"{detail}\n\nRun manually:\n  {' '.join(manual_command)}",
+                title="[bold red]Upgrade failed[/bold red]",
+                border_style="red",
+            )
+        )
+        return False
+
+    console.print(
+        Panel(
+            f"jev-align {latest_version} is installed. Restart `jeva` to use it.",
+            title="[bold green]Upgrade complete[/bold green]",
+            border_style="green",
+        )
+    )
+    return True
 
 
 def _prompt_value(prompt: str, *, default: str | None = None) -> str:
@@ -289,6 +471,54 @@ def _show_example_setup(preset: ExamplePreset) -> None:
     if preset.classes:
         table.add_row("Labels", ", ".join(name for name, _ in preset.classes))
     console.print(Panel(table, title="Example setup"))
+
+
+def _choose_advanced_settings(
+    batch_size: int, holdout: bool, metric_budget: int
+) -> tuple[int, bool, int]:
+    batch_key = _select_option(
+        "Training annotations per round",
+        [
+            ("a", "5 annotations (default)"),
+            ("b", "10 annotations"),
+            ("c", "15 annotations"),
+            ("d", "20 annotations"),
+        ],
+        initial_key={5: "a", 10: "b", 15: "c", 20: "d"}.get(batch_size, "a"),
+    )
+    selected_batch = {"a": 5, "b": 10, "c": 15, "d": 20}[batch_key]
+    holdout_choice = _select_option(
+        "Reserve 20% of rows as a held-out evaluation set?",
+        [
+            ("n", "No (default)"),
+            ("y", "Yes — add 20% extra held-out annotations each round"),
+        ],
+        initial_key="y" if holdout else "n",
+    )
+    while True:
+        raw_budget = _prompt_value(
+            "Maximum GEPA metric calls", default=str(metric_budget)
+        )
+        try:
+            selected_budget = int(raw_budget)
+        except ValueError:
+            console.print("Enter a positive whole number.", style="red")
+            continue
+        if selected_budget > 0:
+            break
+        console.print("Enter a positive whole number.", style="red")
+    return selected_batch, holdout_choice == "y", selected_budget
+
+
+def _holdout_story_ids(
+    stories: list[Story], *, fraction: float, seed: int
+) -> list[str]:
+    if fraction == 0.0:
+        return []
+    count = max(1, round(len(stories) * fraction))
+    story_ids = [story.id for story in stories]
+    random.Random(seed).shuffle(story_ids)
+    return story_ids[:count]
 
 
 def _new_run_wizard() -> None:
@@ -403,9 +633,26 @@ def _new_run_wizard() -> None:
                 for index in range(level_count)
             ]
     reflection_model = _choose_reflection_model()
-    action = _select_option("Create this run", [("s", "Start"), ("q", "Quit")])
-    if action == "q":
-        return
+    batch_size = 5
+    holdout = False
+    metric_budget = 300
+    while True:
+        action = _select_option(
+            "Create this AI Function",
+            [("c", "Create"), ("a", "Advanced")],
+        )
+        if action == "c":
+            break
+        batch_size, holdout, metric_budget = _choose_advanced_settings(
+            batch_size, holdout, metric_budget
+        )
+        extra = round(batch_size * 0.2) if holdout else 0
+        console.print(
+            f"[dim]{batch_size} training annotations per round"
+            + (f" + {extra} held-out" if holdout else " · no held-out set")
+            + f" · max {metric_budget} GEPA metric calls"
+            + "[/dim]"
+        )
     optimize(
         data=data,
         question=question,
@@ -416,6 +663,9 @@ def _new_run_wizard() -> None:
         score_levels=score_levels,
         multilabel=task_type == "l",
         pool_size=pool_size,
+        batch_size=batch_size,
+        holdout=holdout,
+        metric_budget=metric_budget,
         true_criteria=true_criteria,
         false_criteria=false_criteria,
         true_label=true_label,
@@ -803,6 +1053,15 @@ def _latest_fit(saved: SavedFunction) -> float | None:
     return accepted[-1] if accepted else None
 
 
+def _latest_holdout_fit(saved: SavedFunction) -> float | None:
+    accepted = [
+        item.holdout_score
+        for item in saved.state.history
+        if item.decision == "accepted" and item.holdout_score is not None
+    ]
+    return accepted[-1] if accepted else None
+
+
 def _function_name(saved: SavedFunction) -> str:
     seed = next(
         (item.candidate for item in saved.state.history if item.decision == "seed"),
@@ -839,6 +1098,9 @@ def _function_card(saved: SavedFunction, *, selected: bool = False) -> Panel:
     )
     if fit is not None:
         details.add_row("Latest fit", f"{fit:.3f} (training labels)")
+    holdout_fit = _latest_holdout_fit(saved)
+    if holdout_fit is not None:
+        details.add_row("Latest held-out", f"{holdout_fit:.3f}")
     if saved.certainty is not None:
         details.add_row("Pool certainty", f"{saved.certainty:.1%}")
     if state.pending_candidate is not None:
@@ -939,7 +1201,11 @@ def _acquisition_context(
     prediction: Prediction, source: str, *, binary_true_label: str = "True"
 ) -> str:
     selection = (
-        "Random audit sample" if source == "exploration" else "Uncertainty sample"
+        "Held-out evaluation"
+        if source == "holdout"
+        else "Random audit sample"
+        if source == "exploration"
+        else "Uncertainty sample"
     )
     uncertainty = prediction_ambiguity(prediction)
     if prediction.label_probabilities is not None:
@@ -1010,8 +1276,21 @@ def _styled_acquisition_context(
         prediction, source, binary_true_label=binary_true_label
     )
     rendered = Text(plain)
-    selection = "Random audit sample" if source == "exploration" else "Uncertainty sample"
-    rendered.stylize("bold yellow" if source == "exploration" else "bold magenta", 0, len(selection))
+    selection = (
+        "Held-out evaluation"
+        if source == "holdout"
+        else "Random audit sample"
+        if source == "exploration"
+        else "Uncertainty sample"
+    )
+    selection_style = (
+        "bold blue"
+        if source == "holdout"
+        else "bold yellow"
+        if source == "exploration"
+        else "bold magenta"
+    )
+    rendered.stylize(selection_style, 0, len(selection))
     prediction_start = plain.rfind(" · ") + 3
     rendered.stylize("cyan", prediction_start)
     return rendered
@@ -1258,80 +1537,70 @@ def _change_text(value: float, *, regression_style: str = "red") -> Text:
     return Text(f"{value:+.3f}", style=style)
 
 
+def _metric_display(metrics: object) -> tuple[str, str, float]:
+    if isinstance(metrics, ScoreMetrics):
+        return (
+            "Ordinal fit",
+            f"{metrics.fit_score:.3f} · MAE {metrics.mae:.3f}",
+            metrics.fit_score,
+        )
+    if isinstance(metrics, MultilabelMetrics):
+        return (
+            "Micro-F1",
+            f"{metrics.micro_f1:.3f} · {metrics.exact_matches}/{metrics.total} exact",
+            metrics.micro_f1,
+        )
+    if isinstance(metrics, MulticlassMetrics):
+        return (
+            "Macro-F1",
+            f"{metrics.macro_f1:.3f} · {metrics.correct}/{metrics.total} correct",
+            metrics.macro_f1,
+        )
+    assert isinstance(metrics, BinaryMetrics)
+    return (
+        "F1",
+        f"{metrics.f1:.3f} · P {metrics.precision:.3f} · R {metrics.recall:.3f}",
+        metrics.f1,
+    )
+
+
+def _add_metric_row(
+    table: Table,
+    split: str,
+    previous: object,
+    proposed: object,
+) -> None:
+    metric_name, previous_text, previous_value = _metric_display(previous)
+    proposed_name, proposed_text, proposed_value = _metric_display(proposed)
+    if metric_name != proposed_name:
+        raise ValueError("current and proposed metrics use different task types")
+    table.add_row(
+        f"{split} {metric_name}",
+        previous_text,
+        proposed_text,
+        _change_text(proposed_value - previous_value),
+    )
+
+
 def _metrics_table(report: RoundReport) -> Table:
-    table = Table(title="GEPA fit score (all labels; training only)")
+    table = Table(title="AI Function scores")
     table.add_column("Score")
     table.add_column("Current", justify="right")
     table.add_column("Proposed", justify="right")
     table.add_column("Change", justify="right")
-    if isinstance(report.previous_metrics, ScoreMetrics):
-        assert isinstance(report.proposed_metrics, ScoreMetrics)
-        table.add_row(
-            "Ordinal fit",
-            (
-                f"{report.previous_metrics.fit_score:.3f} · "
-                f"MAE {report.previous_metrics.mae:.3f}"
-            ),
-            (
-                f"{report.proposed_metrics.fit_score:.3f} · "
-                f"MAE {report.proposed_metrics.mae:.3f}"
-            ),
-            _change_text(
-                report.proposed_metrics.fit_score
-                - report.previous_metrics.fit_score
-            ),
-        )
-        return table
-    if isinstance(report.previous_metrics, MultilabelMetrics):
-        assert isinstance(report.proposed_metrics, MultilabelMetrics)
-        table.add_row(
-            "Micro-F1",
-            (
-                f"{report.previous_metrics.micro_f1:.3f} · "
-                f"{report.previous_metrics.exact_matches}/{report.previous_metrics.total} exact"
-            ),
-            (
-                f"{report.proposed_metrics.micro_f1:.3f} · "
-                f"{report.proposed_metrics.exact_matches}/{report.proposed_metrics.total} exact"
-            ),
-            _change_text(
-                report.proposed_metrics.micro_f1
-                - report.previous_metrics.micro_f1
-            ),
-        )
-        return table
-    if isinstance(report.previous_metrics, MulticlassMetrics):
-        assert isinstance(report.proposed_metrics, MulticlassMetrics)
-        table.add_row(
-            "Macro-F1",
-            (
-                f"{report.previous_metrics.macro_f1:.3f} · "
-                f"{report.previous_metrics.correct}/{report.previous_metrics.total} correct"
-            ),
-            (
-                f"{report.proposed_metrics.macro_f1:.3f} · "
-                f"{report.proposed_metrics.correct}/{report.proposed_metrics.total} correct"
-            ),
-            _change_text(
-                report.proposed_metrics.macro_f1
-                - report.previous_metrics.macro_f1
-            ),
-        )
-        return table
-    table.add_row(
-        "F1",
-        (
-            f"{report.previous_metrics.f1:.3f} · "
-            f"P {report.previous_metrics.precision:.3f} · "
-            f"R {report.previous_metrics.recall:.3f}"
-        ),
-        (
-            f"{report.proposed_metrics.f1:.3f} · "
-            f"P {report.proposed_metrics.precision:.3f} · "
-            f"R {report.proposed_metrics.recall:.3f}"
-        ),
-        _change_text(report.proposed_metrics.f1 - report.previous_metrics.f1),
+    _add_metric_row(
+        table, "Training", report.previous_metrics, report.proposed_metrics
     )
+    if (
+        report.previous_holdout_metrics is not None
+        and report.proposed_holdout_metrics is not None
+    ):
+        _add_metric_row(
+            table,
+            "Held-out",
+            report.previous_holdout_metrics,
+            report.proposed_holdout_metrics,
+        )
     return table
 
 
@@ -1530,9 +1799,19 @@ def _show_latest_optimized(saved: SavedFunction) -> None:
     setup.add_row("Source", state.source_path)
     setup.add_row("Rows", f"{state.pool_size:,}")
     setup.add_row("Columns", ", ".join(state.selected_columns or ["legacy default"]))
+    setup.add_row("Training annotations/round", str(state.batch_size))
+    setup.add_row(
+        "Held-out evaluation",
+        (
+            f"20% reserved · {state.holdout_batch_size} extra annotation(s)/round"
+            if state.holdout_fraction
+            else "Disabled"
+        ),
+    )
     setup.add_row("Evaluation backend", state.backend.provider)
     setup.add_row("Evaluation model", state.backend.model)
     setup.add_row("GEPA model", state.reflection_model)
+    setup.add_row("Max GEPA metric calls", str(state.metric_budget))
     setup.add_row("Labels", str(saved.label_count))
     console.print(Panel(setup, title="Setup"))
     console.print(Panel(_signature(candidate, state), title="Signature"))
@@ -1562,6 +1841,11 @@ def _show_latest_optimized(saved: SavedFunction) -> None:
     fit = _latest_fit(saved)
     scoring.add_row(
         "Training fit", f"{fit:.3f}" if fit is not None else "Not optimized yet"
+    )
+    holdout_fit = _latest_holdout_fit(saved)
+    scoring.add_row(
+        "Held-out score",
+        f"{holdout_fit:.3f}" if holdout_fit is not None else "Not available",
     )
     scoring.add_row(
         "Fixed-pool certainty",
@@ -1697,6 +1981,7 @@ def _resume_saved_function(saved: SavedFunction) -> None:
         backend_model=None,
         pool_size=1000,
         batch_size=5,
+        holdout=False,
         metric_budget=300,
         concurrency=16,
         seed=0,
@@ -1821,7 +2106,25 @@ def optimize(
     ] = None,
     pool_size: Annotated[int, typer.Option("--pool-size", min=5)] = 1000,
     batch_size: Annotated[int, typer.Option("--batch-size", min=2)] = 5,
-    metric_budget: Annotated[int, typer.Option("--metric-budget", min=1)] = 300,
+    holdout: Annotated[
+        bool,
+        typer.Option(
+            "--holdout",
+            help=(
+                "Reserve 20% of rows and collect 20% extra held-out annotations "
+                "per round"
+            ),
+        ),
+    ] = False,
+    metric_budget: Annotated[
+        int,
+        typer.Option(
+            "--max-metric-calls",
+            "--metric-budget",
+            min=1,
+            help="Maximum GEPA metric calls per optimization round",
+        ),
+    ] = 300,
     concurrency: Annotated[int, typer.Option("--concurrency", min=1)] = 16,
     seed: Annotated[int, typer.Option("--seed")] = 0,
 ) -> None:
@@ -1908,6 +2211,14 @@ def optimize(
                 f"dataset has {len(stories):,} rows, fewer than the requested "
                 f"batch size of {batch_size:,}"
             )
+        holdout_ids = _holdout_story_ids(
+            stories, fraction=0.2 if holdout else 0.0, seed=seed
+        )
+        if len(stories) - len(holdout_ids) < batch_size:
+            raise typer.BadParameter(
+                "the 20% holdout leaves fewer training rows than the requested "
+                f"batch size of {batch_size:,}"
+            )
         if score_levels:
             candidate: (
                 CandidateSpec
@@ -1981,6 +2292,8 @@ def optimize(
             metric_budget=metric_budget,
             concurrency=concurrency,
             batch_size=batch_size,
+            holdout_fraction=0.2 if holdout else 0.0,
+            holdout_story_ids=holdout_ids,
             binary_true_label=true_label,
             binary_false_label=false_label,
             current_candidate=candidate,
@@ -2018,7 +2331,14 @@ def optimize(
                 f"{state.backend.provider}/{state.backend.model}..."
             )
             acquisitions, pool_predictions = session.acquire()
+            holdout_acquisitions = session.acquire_holdout(pool_predictions)
+            acquisitions = [*acquisitions, *holdout_acquisitions]
             _show_current_uncertainty(pool_predictions)
+            if holdout_acquisitions:
+                console.print(
+                    f"[dim]This round includes {len(holdout_acquisitions)} extra "
+                    "held-out evaluation annotation(s).[/dim]"
+                )
             index = 0
             rewound = False
             while index < len(acquisitions):
@@ -2081,6 +2401,11 @@ def optimize(
                         label=choice,
                         rationale=rationale,
                         acquired_by=acquisition.source,  # type: ignore[arg-type]
+                        evaluation_split=(
+                            "holdout"
+                            if acquisition.source == "holdout"
+                            else "train"
+                        ),
                         probability=_acquisition_probability(acquisition.prediction),
                         resolved_model=acquisition.prediction.resolved_model,
                     )

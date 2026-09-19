@@ -30,13 +30,13 @@ configured.
 Use the guided home screen when the user wants to choose interactively:
 
 ```shell
-./jev-align
+jeva
 ```
 
 Use flags when the setup is already known:
 
 ```shell
-./jev-align optimize DATA \
+jeva optimize DATA \
   --question "QUESTION" \
   --column COLUMN
 ```
@@ -49,6 +49,13 @@ Relevant task shapes:
   labels.
 - Multilabel: repeat `--class "NAME=DESCRIPTION"` and add `--multilabel`.
 - Score: repeat `--score-level "DESCRIPTION"` in lowest-to-highest order.
+
+Use `--batch-size` to choose the number of training annotations per round. The
+guided Advanced menu offers 5, 10, 15, or 20. Add `--holdout` only when the user
+wants a 20% reserved evaluation split; this adds 20% extra held-out annotations
+per round. Advanced also configures maximum GEPA metric calls, which defaults to
+300. For scripted runs, use `--max-metric-calls`; `--metric-budget` remains an
+alias.
 
 Use `--all-columns-concatenated` only when every field is useful. Prefer
 explicit `--column` values when IDs, timestamps, or metadata could distract the
@@ -67,6 +74,10 @@ For each displayed item:
 3. Ask the user for the label.
 4. Ask for an optional rationale, especially on ambiguous or surprising cases.
 5. Enter exactly what the user chose.
+
+Held-out cards are explicitly marked. Collect their labels normally, but never
+reuse their labels or rationales to guide task wording. The CLI keeps them out
+of GEPA and reports their score separately.
 
 There is no skip action. At the label picker, `b` removes the previous answer
 and moves backward. At the rationale prompt, `/back` returns to the current
@@ -94,13 +105,13 @@ labels and is not a held-out generalization estimate.
 Browse saved AI Functions with:
 
 ```shell
-./jev-align functions
+jeva functions
 ```
 
 Resume a known run directly with:
 
 ```shell
-./jev-align optimize --resume .jev-align/runs/RUN_ID
+jeva optimize --resume .jev-align/runs/RUN_ID
 ```
 
 Saved state, labels, prediction caches, GEPA artifacts, and rewind archives live

@@ -119,6 +119,103 @@ def test_mocked_round_persists_pending_diff_and_accepts(tmp_path, monkeypatch) -
     assert resumed_jev.calls == 0
 
 
+def test_holdout_labels_are_added_separately_and_never_sent_to_gepa(
+    tmp_path, monkeypatch
+) -> None:
+    candidate = CandidateSpec(
+        instructions="seed",
+        true_criteria="odd row",
+        false_criteria="even row",
+    )
+    state = RunState(
+        run_id="holdout",
+        source_path="/tmp/mock.csv",
+        source_sha256="hash",
+        pool_size=8,
+        batch_size=5,
+        holdout_fraction=0.2,
+        holdout_story_ids=["row-7", "row-8"],
+        reflection_model="openai/mock",
+        current_candidate=candidate,
+        history=[CandidateHistory(round_number=0, candidate=candidate, decision="seed")],
+    )
+    stories = [
+        Story(id=f"row-{index}", row_number=index, fields={"text": str(index)})
+        for index in range(1, 9)
+    ]
+
+    class ParityJev:
+        def evaluate_many(self, _candidate, selected_stories):
+            return [
+                Prediction(
+                    story_id=story.id,
+                    probability=0.9 if story.row_number % 2 else 0.1,
+                )
+                for story in selected_stories
+            ]
+
+    store = RunStore(tmp_path / "holdout-run")
+    store.initialize(state)
+    session = ClimbSession(state, stories, store, ParityJev())
+
+    acquisitions, pool_predictions = session.acquire()
+    holdout_acquisitions = session.acquire_holdout(pool_predictions)
+    assert len(acquisitions) == 5
+    assert len(holdout_acquisitions) == 1
+    assert all(item.prediction.story_id not in state.holdout_story_ids for item in acquisitions)
+    assert holdout_acquisitions[0].prediction.story_id in state.holdout_story_ids
+
+    for acquisition in acquisitions:
+        probability = acquisition.prediction.probability or 0.0
+        session.add_label(
+            story_id=acquisition.prediction.story_id,
+            label=probability >= 0.5,
+            rationale=None,
+            acquired_by=acquisition.source,
+            probability=probability,
+        )
+    heldout = holdout_acquisitions[0]
+    heldout_probability = heldout.prediction.probability or 0.0
+    session.add_label(
+        story_id=heldout.prediction.story_id,
+        label=heldout_probability >= 0.5,
+        rationale="independent check",
+        acquired_by="holdout",
+        evaluation_split="holdout",
+        probability=heldout_probability,
+    )
+
+    def fake_optimize_candidate(**kwargs):
+        example_ids = {item["story_id"] for item in kwargs["examples"]}
+        assert len(example_ids) == 5
+        assert example_ids.isdisjoint(state.holdout_story_ids)
+        return OptimizationOutcome(
+            candidate=candidate,
+            best_score=1.0,
+            total_metric_calls=1,
+            metadata={},
+        )
+
+    monkeypatch.setattr("jev_align.session.optimize_candidate", fake_optimize_candidate)
+    report = session.optimize(pool_predictions)
+
+    labels = store.load_labels()
+    assert sum(item.evaluation_split == "train" for item in labels) == 5
+    assert sum(item.evaluation_split == "holdout" for item in labels) == 1
+    assert report.previous_holdout_metrics is not None
+    assert report.proposed_holdout_metrics is not None
+    assert sum(
+        (
+            report.previous_holdout_metrics.tp,
+            report.previous_holdout_metrics.fp,
+            report.previous_holdout_metrics.fn,
+            report.previous_holdout_metrics.tn,
+        )
+    ) == 1
+    session.decide("accept")
+    assert store.load_state().history[-1].holdout_score is not None
+
+
 def test_rewind_restores_candidate_and_reopens_previous_labeling_round(
     tmp_path,
 ) -> None:

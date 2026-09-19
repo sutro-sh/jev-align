@@ -77,8 +77,10 @@ def test_legacy_jev_model_migrates_to_backend_configuration() -> None:
         }
     )
 
-    assert state.version == 2
+    assert state.version == 3
     assert state.backend == BackendConfig(provider="typesafe", model="jev-legacy")
+    assert state.holdout_fraction == 0.0
+    assert state.holdout_story_ids == []
     assert "jev_model" not in state.model_dump()
 
 

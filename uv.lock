@@ -1593,6 +1593,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "gepa", extra = ["full"] },
+    { name = "packaging" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "rich" },
@@ -1609,6 +1610,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "gepa", extras = ["full"], specifier = ">=0.1.4,<0.2" },
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "pyarrow", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },

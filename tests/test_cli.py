@@ -13,6 +13,7 @@ from jev_align.cli import (
     console,
 )
 from jev_align.models import (
+    BinaryMetrics,
     CandidateSpec,
     CandidateHistory,
     ClassMetrics,
@@ -287,6 +288,43 @@ def test_score_gepa_metric_is_rendered_as_one_compact_row() -> None:
     assert "+0.200" in output
 
 
+def test_metrics_table_shows_training_and_heldout_scores_together() -> None:
+    candidate = CandidateSpec(
+        instructions="Is it aviation?",
+        true_criteria="Aviation.",
+        false_criteria="Not aviation.",
+    )
+    training = BinaryMetrics(
+        tp=3, fp=1, fn=1, tn=0, precision=0.75, recall=0.75, f1=0.75
+    )
+    improved = BinaryMetrics(
+        tp=4, fp=0, fn=0, tn=1, precision=1.0, recall=1.0, f1=1.0
+    )
+    holdout = BinaryMetrics(
+        tp=1, fp=0, fn=0, tn=1, precision=1.0, recall=1.0, f1=1.0
+    )
+    report = RoundReport(
+        previous_candidate=candidate,
+        proposed_candidate=candidate,
+        previous_metrics=training,
+        proposed_metrics=improved,
+        previous_holdout_metrics=holdout,
+        proposed_holdout_metrics=holdout,
+        previous_ambiguity={},
+        proposed_ambiguity={},
+        total_metric_calls=10,
+        configured_metric_budget=300,
+    )
+
+    table = _metrics_table(report)
+    with console.capture() as capture:
+        console.print(table)
+
+    assert table.row_count == 2
+    assert "Training F1" in capture.get()
+    assert "Held-out F1" in capture.get()
+
+
 def test_label_context_identifies_uncertainty_and_random_audit_samples() -> None:
     assert _acquisition_context(
         Prediction(story_id="a", probability=0.51), "ambiguous"
@@ -294,6 +332,9 @@ def test_label_context_identifies_uncertainty_and_random_audit_samples() -> None
     assert _acquisition_context(
         Prediction(story_id="a", probability=0.10), "exploration"
     ) == ("Random audit sample · 20.0% uncertain · Model true probability 10.0%")
+    assert _acquisition_context(
+        Prediction(story_id="a", probability=0.8), "holdout"
+    ) == ("Held-out evaluation · 40.0% uncertain · Model true probability 80.0%")
 
 
 def test_label_metadata_is_rendered_outside_content_card() -> None:
@@ -354,6 +395,112 @@ def test_optimize_replaces_climb_as_the_visible_command() -> None:
     assert "climb [OPTIONS]" in legacy_result.output
 
 
+def test_update_prompt_upgrades_with_current_python_and_exits(monkeypatch) -> None:
+    commands = []
+    monkeypatch.setattr(cli, "_installed_package", lambda: ("0.1.0", False))
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda _current: "0.2.0")
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "u")
+    pip_command = [
+        cli.sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "jev-align",
+    ]
+    monkeypatch.setattr(cli, "_upgrade_commands", lambda: [pip_command])
+
+    def fake_run(command, *, check):
+        commands.append((command, check))
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with console.capture() as capture:
+        upgraded = cli._maybe_offer_update(interactive=True)
+
+    assert upgraded is True
+    assert commands == [(pip_command, False)]
+    assert "Update available" in capture.get()
+    assert "0.1.0" in capture.get()
+    assert "0.2.0" in capture.get()
+    assert "Restart `jeva`" in capture.get()
+
+
+def test_upgrade_prefers_uv_for_a_virtual_environment(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_running_in_virtual_environment", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda executable: "/usr/local/bin/uv")
+
+    commands = cli._upgrade_commands()
+
+    assert commands[0] == [
+        "/usr/local/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        cli.sys.executable,
+        "--upgrade",
+        "jev-align",
+    ]
+    assert commands[1][:4] == [cli.sys.executable, "-m", "pip", "install"]
+
+
+def test_upgrade_falls_back_to_pip_when_uv_fails(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_installed_package", lambda: ("0.1.0", False))
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda _current: "0.2.0")
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "u")
+    monkeypatch.setattr(cli, "_upgrade_commands", lambda: [["uv"], ["pip"]])
+    commands = []
+
+    def fake_run(command, *, check):
+        commands.append((command, check))
+        return type("Result", (), {"returncode": 1 if command == ["uv"] else 0})()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with console.capture() as capture:
+        upgraded = cli._maybe_offer_update(interactive=True)
+
+    assert upgraded is True
+    assert commands == [(["uv"], False), (["pip"], False)]
+    assert "uv upgrade failed; trying pip" in capture.get()
+
+
+def test_update_prompt_can_be_skipped(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_installed_package", lambda: ("0.1.0", False))
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda _current: "0.2.0")
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "s")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()),
+    )
+
+    assert cli._maybe_offer_update(interactive=True) is False
+
+
+def test_update_check_skips_editable_installs(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_installed_package", lambda: ("0.1.0", True))
+    monkeypatch.setattr(
+        cli,
+        "_latest_pypi_version",
+        lambda _current: (_ for _ in ()).throw(AssertionError()),
+    )
+
+    assert cli._maybe_offer_update(interactive=True) is False
+
+
+def test_update_check_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("JEVA_DISABLE_UPDATE_CHECK", "1")
+    monkeypatch.setattr(
+        cli,
+        "_installed_package",
+        lambda: (_ for _ in ()).throw(AssertionError()),
+    )
+
+    assert cli._maybe_offer_update(interactive=True) is False
+
+
 def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
@@ -368,7 +515,7 @@ def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
     )
     result = CliRunner().invoke(
         cli.app,
-        input="n\n\na\nIs the post related to aviation?\n\n\nstart\n",
+        input="n\n\na\nIs the post related to aviation?\n\n\nc\n",
     )
     assert result.exit_code == 0
     assert captured["data"].name == "hn-stories.csv"
@@ -377,6 +524,7 @@ def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
     assert captured["columns"] is None
     assert captured["all_columns_concatenated"] is True
     assert captured["pool_size"] == 1000
+    assert captured["metric_budget"] == 300
     assert "jev-align" in result.output
     assert "An experiment from sutro.sh" in result.output
     assert "https://github.com/sutro-sh/jev-align" in result.output
@@ -397,6 +545,32 @@ def test_bare_command_can_open_existing_functions(monkeypatch) -> None:
     assert "Optimize a new AI Function" in result.output
     assert "Show existing AI" in result.output
     assert "Functions" in result.output
+
+
+def test_wizard_advanced_settings_enable_larger_batches_and_holdout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    captured = {}
+    monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_choose_dataset", lambda _root: Path("sample_data/hn-stories.csv")
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        input="n\n\na\nIs it aviation?\n\n\na\nb\ny\n450\nc\n",
+    )
+
+    assert result.exit_code == 0
+    assert captured["batch_size"] == 10
+    assert captured["holdout"] is True
+    assert captured["metric_budget"] == 450
+    assert (
+        "10 training annotations per round + 2 held-out · max 450 GEPA metric calls"
+        in result.output
+    )
 
 
 def test_wizard_row_default_uses_all_when_dataset_is_under_1000(
@@ -432,7 +606,7 @@ def test_wizard_can_select_first_n_rows(monkeypatch) -> None:
     )
     result = CliRunner().invoke(
         cli.app,
-        input="n\nf\n500\na\nIs it aviation?\n\n\nstart\n",
+        input="n\nf\n500\na\nIs it aviation?\n\n\nc\n",
     )
     assert result.exit_code == 0
     assert captured["pool_size"] == 500
@@ -452,7 +626,7 @@ def test_wizard_can_select_specific_columns(monkeypatch) -> None:
     )
     result = CliRunner().invoke(
         cli.app,
-        input="n\n\ns\ntitle,text\nIs it aviation?\n\n\nstart\n",
+        input="n\n\ns\ntitle,text\nIs it aviation?\n\n\nc\n",
     )
     assert result.exit_code == 0
     assert captured["columns"] == ["title", "text"]
@@ -473,7 +647,7 @@ def test_wizard_can_choose_a_different_reflection_model(monkeypatch) -> None:
     )
     result = CliRunner().invoke(
         cli.app,
-        input="n\n\na\nIs it aviation?\n\nc\n3\nstart\n",
+        input="n\n\na\nIs it aviation?\n\nc\n3\nc\n",
     )
     assert result.exit_code == 0
     assert captured["reflection_model"] == "openai/gpt-5.6-terra"
@@ -544,7 +718,7 @@ def test_wizard_builds_multiclass_definition(monkeypatch) -> None:
         input=(
             "n\n\na\nWhat kind of post is this?\nm\naviation,space,other\n"
             "Aircraft and atmospheric flight\nSpacecraft and astronomy\nEverything else\n"
-            "\nstart\n"
+            "\nc\n"
         ),
     )
     assert result.exit_code == 0
@@ -570,7 +744,7 @@ def test_wizard_builds_multilabel_definition(monkeypatch) -> None:
         cli.app,
         input=(
             "n\n\na\nApply every relevant topic.\nl\ntech,startups,culture\n"
-            "Technology\nStartup ecosystem\nCulture and media\n\nstart\n"
+            "Technology\nStartup ecosystem\nCulture and media\n\nc\n"
         ),
     )
     assert result.exit_code == 0
@@ -595,7 +769,7 @@ def test_wizard_builds_score_definition(monkeypatch) -> None:
         cli.app,
         input=(
             "n\n\na\nHow severe is this issue?\ns\n3\nCosmetic only\n"
-            "Degraded but usable\nBlocking with no workaround\n\nstart\n"
+            "Degraded but usable\nBlocking with no workaround\n\nc\n"
         ),
     )
 
@@ -642,7 +816,11 @@ def test_example_datasets_use_preconfigured_flows(monkeypatch) -> None:
     monkeypatch.setattr(
         cli, "_choose_reflection_model", lambda: "openai/gpt-5.6-luna"
     )
-    monkeypatch.setattr(cli, "_select_option", lambda _prompt, _options: "s")
+    monkeypatch.setattr(
+        cli,
+        "_select_option",
+        lambda prompt, _options: "c" if prompt == "Create this AI Function" else "s",
+    )
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.append(kwargs))
 
     for filename in ("hn-stories.csv", "support-tickets.csv", "agent-traces.csv"):

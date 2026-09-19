@@ -8,8 +8,24 @@ version = "0.1.0"
 description = "Build and optimize AI Functions with pluggable evaluators and GEPA"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Sutro" }]
+keywords = ["active-learning", "classification", "evals", "gepa", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "gepa[full]>=0.1.4,<0.2",
+  "packaging>=24,<27",
   "pyarrow>=25,<26",
   "pydantic>=2.10,<3",
   "rich>=13.9,<15",
@@ -25,6 +41,13 @@ dev = [
 
 [project.scripts]
 jev-align = "jev_align.cli:app"
+jeva = "jev_align.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/sutro-sh/jev-align"
+Repository = "https://github.com/sutro-sh/jev-align"
+Documentation = "https://github.com/sutro-sh/jev-align#readme"
+Issues = "https://github.com/sutro-sh/jev-align/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jev_align"]
