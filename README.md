@@ -100,18 +100,20 @@ jeva optimize --resume .jev-align/runs/<run-id>
 
 ## Keep learning from production
 
-Use an AI Function in your application and capture production examples with a
-decorator:
+Load an AI Function in your application and capture useful production examples:
 
 ```python
-from jev_align import Capture, aligned
+from jev_align import AIFunction
 
-with Capture() as captures:
-    @aligned(".jev-align/runs/<run-id>", capture=captures)
-    def is_aviation(title, text):
-        return {"title": title, "text": text}
+is_aviation = AIFunction.load(
+    ".jev-align/runs/<run-id>",
+    capture=True,
+)
 
-    prediction = is_aviation("Airport expansion", "A new runway opens next year.")
+prediction = is_aviation(
+    title="Airport expansion",
+    text="A new runway opens next year.",
+)
 ```
 
 Later, resume the AI Function and label the captured examples. GEPA uses that

@@ -198,29 +198,28 @@ Running an accepted function on another dataset writes JSONL results to
 
 Applications can call an accepted AI Function and record uncertain or randomly
 audited predictions for later human labeling. Install `jev-align` in the
-application environment, create one `Capture` for each worker process, and pass
-it to the synchronous `aligned` decorator:
+application environment and load the saved run with capture enabled:
 
 ```python
-from jev_align import Capture, aligned
+from jev_align import AIFunction
 
-with Capture(ambiguity_threshold=0.8, audit_rate=0.05) as captures:
-    @aligned(".jev-align/runs/RUN_ID", capture=captures)
-    def is_aviation(title, text):
-        return {"title": title, "text": text}
+is_aviation = AIFunction.load(
+    ".jev-align/runs/RUN_ID",
+    capture=True,
+)
 
-    prediction = is_aviation(
-        "Airport expansion",
-        "A new runway opens next year.",
-    )
+prediction = is_aviation(
+    title="Airport expansion",
+    text="A new runway opens next year.",
+)
 ```
 
-The decorated function's returned mapping must use the input columns configured
-for the saved run. It returns a normalized `Prediction`; it does not return a
-human label. `Capture` adds no model call and writes selected observations to
-`.jev-align/captures/` in the background. Use it as a context manager or call
-`close()` during shutdown so queued records can be flushed. This integration is
-currently synchronous.
+Calls must use the input columns configured for the saved run and return a
+normalized `Prediction`, not a human label. Capture adds no model call and writes
+selected observations to `.jev-align/captures/` in the background. A recorder
+created by `capture=True` is flushed automatically at process shutdown. Call the
+AI Function's `close()` method or use it as a context manager when deterministic
+shutdown is required. This integration is currently synchronous.
 
 To continue learning, run `jeva functions`, open the matching AI Function, and
 select **Resume learning**, or run:
@@ -236,12 +235,12 @@ every selected example, with an optional rationale, before GEPA can learn from
 it. Previously labeled captures remain in the evaluation pool, while only
 unlabeled inputs are eligible for another annotation batch.
 
-Accepted definitions are loaded when the decorated function is created. Restart
-the process or recreate the decorated function to use a newly accepted version.
+The accepted definition is loaded when `AIFunction.load(...)` runs. Restart the
+process or reload the AI Function to use a newly accepted version.
 Use `JEVA_CAPTURE_DIR` when the application and CLI need to share a capture
 directory outside the workspace.
 
-The decorator applies the saved run's column selection, normalization, and
+`AIFunction` applies the saved run's column selection, normalization, and
 concatenation. Its return value is a provider-neutral `Prediction`: binary tasks
 expose `probability`, multiclass tasks `choice` and `confidence`, multilabel
 tasks `label_probabilities`, and score tasks `score` and `confidence`. Runtime
@@ -263,7 +262,9 @@ per record, and 64 MiB per capture file. Full queues, oversized records, and
 exhausted file budgets increment `dropped`. Disk errors disable that writer, log
 one warning, and populate `error` without failing successful predictions. Limits
 and files are per `Capture` instance, so create one inside each worker after
-forking. Existing files are not rotated or deleted automatically. Closing drains
+forking. For custom thresholds or storage settings, pass a configured
+`Capture(...)` instance instead of `capture=True`; the caller then owns and must
+close it. Existing files are not rotated or deleted automatically. Closing drains
 the queue for up to five seconds; abrupt shutdown can lose buffered records.
 
 On resume, the CLI searches `.jev-align/captures/` in the current workspace and
@@ -292,7 +293,7 @@ The main modules are:
 - `src/jev_align/jev.py`: TypeSafe JEV adapter.
 - `src/jev_align/models.py`: persisted schemas and normalized predictions.
 - `src/jev_align/persistence.py`: run and label storage.
-- `src/jev_align/runtime.py`: synchronous `aligned` decorator for saved functions.
+- `src/jev_align/runtime.py`: synchronous callable interface for saved functions.
 - `src/jev_align/capture.py`: bounded, best-effort JSONL capture of live predictions.
 - `src/jev_align/captured_inputs.py`: discovery and deduplication of captured inputs.
 

@@ -6,7 +6,7 @@ from threading import Event
 
 import pytest
 
-from jev_align import Capture, aligned
+from jev_align import AIFunction, Capture
 from jev_align import runtime
 from jev_align.data import load_stories
 from jev_align.jev import TypeSafeJevEvaluator
@@ -81,12 +81,10 @@ def test_runtime_pins_current_definition_and_preserves_run(
 ):
     original = saved_run.state_path.read_bytes()
     with Capture(tmp_path / "captures", audit_rate=0) as capture:
-
-        @aligned(saved_run.directory, capture=capture)
-        def aviation(text):
-            return {"text": text, "ignored": "private metadata"}
-
-        prediction = aviation("<p>Plane &amp; pilot</p>")
+        aviation = AIFunction.load(saved_run.directory, capture=capture)
+        prediction = aviation(
+            text="<p>Plane &amp; pilot</p>", ignored="private metadata"
+        )
 
     assert prediction.probability == 0.5
     assert len(backend.calls) == 1
@@ -107,7 +105,7 @@ def test_runtime_pins_current_definition_and_preserves_run(
     state = saved_run.load_state()
     state.current_candidate = state.pending_candidate
     saved_run.save_state(state)
-    aviation("Second call")
+    aviation(text="Second call")
     assert backend.calls[-1][0].instructions == "Is it aviation?"
 
 
@@ -117,11 +115,8 @@ def test_runtime_without_capture_and_concatenation(saved_run, backend):
     state.selected_columns = ["title", "text"]
     saved_run.save_state(state)
 
-    @aligned(saved_run.directory)
-    def aviation(text):
-        return {"text": text, "title": "<b>Title</b>"}
-
-    assert aviation("Body").probability == 0.5
+    aviation = AIFunction.load(saved_run.directory)
+    assert aviation(text="Body", title="<b>Title</b>").probability == 0.5
     assert backend.calls[0][1][0].fields == {"content": "Title\nBody"}
 
 
@@ -129,35 +124,25 @@ def test_bad_inputs_and_backend_errors_do_not_create_captures(
     saved_run, backend, tmp_path
 ):
     with Capture(tmp_path / "captures") as capture:
-
-        @aligned(saved_run.directory, capture=capture)
-        def aviation(row):
-            return row
-
-        with pytest.raises(TypeError, match="mapping"):
-            aviation("wrong")
+        aviation = AIFunction.load(saved_run.directory, capture=capture)
         with pytest.raises(ValueError, match="missing input fields"):
-            aviation({"other": "wrong"})
+            aviation(other="wrong")
         assert backend.calls == []
         backend.error = RuntimeError("JEV failed")
         with pytest.raises(RuntimeError, match="JEV failed"):
-            aviation({"text": "Plane"})
+            aviation(text="Plane")
     assert records(capture.path) == []
 
 
 def test_filter_and_audit(saved_run, backend, tmp_path):
     backend.probability = 0.99
     with Capture(tmp_path / "filtered", audit_rate=0) as capture:
-        call = aligned(saved_run.directory, capture=capture)(
-            lambda text: {"text": text}
-        )
-        call("Plane")
+        call = AIFunction.load(saved_run.directory, capture=capture)
+        call(text="Plane")
     assert records(capture.path) == []
     with Capture(tmp_path / "audit", audit_rate=1) as capture:
-        call = aligned(saved_run.directory, capture=capture)(
-            lambda text: {"text": text}
-        )
-        call("Plane")
+        call = AIFunction.load(saved_run.directory, capture=capture)
+        call(text="Plane")
     assert records(capture.path)[0]["reason"] == "audit"
     assert len(backend.calls) == 2
 
@@ -174,10 +159,10 @@ def test_full_queue_drops_capture_without_blocking_evaluation(
 
     monkeypatch.setattr(Capture, "_write_loop", paused_writer)
     capture = Capture(tmp_path, queue_size=1)
-    call = aligned(saved_run.directory, capture=capture)(lambda text: {"text": text})
+    call = AIFunction.load(saved_run.directory, capture=capture)
     try:
         with ThreadPoolExecutor(max_workers=8) as executor:
-            results = list(executor.map(call, ["Plane"] * 20))
+            results = list(executor.map(lambda text: call(text=text), ["Plane"] * 20))
         assert len(results) == len(backend.calls) == 20
         assert capture.stats["dropped"] == 19
     finally:
@@ -194,8 +179,8 @@ def test_write_failure_disables_capture_but_keeps_evaluating(
     blocked.write_text("file")
     capture = Capture(blocked)
     capture._thread.join(timeout=2)
-    call = aligned(saved_run.directory, capture=capture)(lambda text: {"text": text})
-    assert call("Plane").probability == 0.5
+    call = AIFunction.load(saved_run.directory, capture=capture)
+    assert call(text="Plane").probability == 0.5
     capture.close()
     assert capture.stats["error"]
     assert capture.stats["dropped"] == 1
@@ -247,6 +232,22 @@ def test_concurrent_calls_produce_complete_records(tmp_path):
     assert capture.stats == {"written": 200, "dropped": 0, "error": None}
 
 
+def test_ai_function_owns_default_capture(saved_run, backend, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    capture_directory = tmp_path / "shared-captures"
+    monkeypatch.setenv("JEVA_CAPTURE_DIR", str(capture_directory))
+    aviation = AIFunction.load(saved_run.directory, capture=True)
+
+    assert isinstance(aviation.capture, Capture)
+    capture_path = aviation.capture.path
+    assert capture_path.parent == capture_directory
+    assert aviation(text="Plane").probability == 0.5
+    aviation.close()
+    aviation.close()
+
+    assert records(capture_path)[0]["input"] == {"text": "Plane"}
+
+
 @pytest.mark.parametrize(
     "values",
     [
@@ -267,12 +268,9 @@ def test_capture_uses_task_specific_uncertainty(tmp_path, values):
     assert records(capture.path)[0]["reason"] == "ambiguous"
 
 
-def test_async_function_rejected(saved_run, backend):
-    async def aviation(text):
-        return {"text": text}
-
-    with pytest.raises(TypeError, match="synchronous"):
-        aligned(saved_run.directory)(aviation)
+def test_invalid_runtime_capture_option(saved_run, backend):
+    with pytest.raises(TypeError, match="True, False, or a Capture"):
+        AIFunction.load(saved_run.directory, capture="yes")
 
 
 @pytest.mark.parametrize(

@@ -3,9 +3,9 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .capture import Capture
-from .runtime import aligned
+from .runtime import AIFunction
 
-__all__ = ["Capture", "aligned", "__version__"]
+__all__ = ["AIFunction", "Capture", "__version__"]
 
 try:
     __version__ = version("jev-align")
