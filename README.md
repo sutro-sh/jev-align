@@ -1,11 +1,10 @@
 # jev-align
 
-`jev-align` is an interactive CLI for teaching an AI Function to match your
-judgment.
+`jev-align` is an experimental CLI for aligning [TypeSafe's Jev](https://docs.typesafe.ai/introduction) your
+judgment, built by [Sutro](https://sutro.sh/)
 
 It finds uncertain rows in a local dataset, asks you to label them, and uses
-[GEPA](https://gepa-ai.github.io/gepa/) to improve the function. The included
-evaluation backend is [TypeSafe JEV](https://docs.typesafe.ai/introduction).
+[GEPA](https://gepa-ai.github.io/gepa/) to improve your AI function. 
 
 ## Quick start
 
