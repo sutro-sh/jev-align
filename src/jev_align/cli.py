@@ -1756,6 +1756,26 @@ def _ambiguity_change(
     return Text(label, style="green" if change < 0 else "yellow" if change > 0 else "dim")
 
 
+def _gepa_completion_text(report: RoundReport) -> Text:
+    calls = report.total_metric_calls
+    budget = report.configured_metric_budget
+    if calls < budget:
+        _, _, proposed_score = _metric_display(report.proposed_metrics)
+        reason = (
+            "perfect training score"
+            if proposed_score >= 1.0
+            else "a stopping condition was reached"
+        )
+        return Text(
+            f"GEPA stopped early: {reason} · {calls}/{budget} metric calls",
+            style="green",
+        )
+    return Text(
+        f"GEPA metric calls: {calls} actual / {budget} configured "
+        "(P×N may finish one in-flight step past the budget)."
+    )
+
+
 def _show_report(session: ClimbSession, report: RoundReport) -> None:
     console.print(_metrics_table(report))
     ambiguity_title = (
@@ -1823,11 +1843,7 @@ def _show_report(session: ClimbSession, report: RoundReport) -> None:
             )
         console.print(replay)
     _show_certainty_history(session, report)
-    console.print(
-        f"GEPA metric calls: {report.total_metric_calls} actual / "
-        f"{report.configured_metric_budget} configured "
-        "(P×N may finish one in-flight step past the budget)."
-    )
+    console.print(_gepa_completion_text(report))
     diff = candidate_diff(report.previous_candidate, report.proposed_candidate)
     console.print(Panel(diff or "No textual change.", title="AI Function diff"))
 

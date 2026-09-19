@@ -4,6 +4,7 @@ from jev_align.cli import (
     _acquisition_context,
     _certainty_bar,
     _compact_option_label,
+    _gepa_completion_text,
     _menu_render,
     _metrics_table,
     _pretty_display_value,
@@ -34,6 +35,18 @@ from typer.testing import CliRunner
 from jev_align import cli
 
 SAMPLE_DATA = cli._packaged_example_directory()
+
+
+def _configure_test_jev_provider(monkeypatch) -> None:
+    """Make wizard tests independent of credentials in the developer shell."""
+    for name in (
+        "TYPESAFE_API_KEY",
+        "AI_GATEWAY_API_KEY",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-typesafe-key")
 
 
 def test_menu_labels_are_rendered_literally() -> None:
@@ -246,6 +259,59 @@ def test_multiclass_gepa_score_is_rendered_as_one_compact_row() -> None:
     assert "1.000 · 5/5 correct" in output
     assert "+0.450" in output
     assert "tech F1" not in output
+
+
+def test_gepa_completion_explains_perfect_score_early_stop() -> None:
+    candidate = CandidateSpec(
+        instructions="Is it relevant?",
+        true_criteria="Relevant.",
+        false_criteria="Not relevant.",
+    )
+    report = RoundReport(
+        previous_candidate=candidate,
+        proposed_candidate=candidate,
+        previous_metrics=BinaryMetrics(
+            tp=1, fp=1, fn=1, tn=0, precision=0.5, recall=0.5, f1=0.5
+        ),
+        proposed_metrics=BinaryMetrics(
+            tp=2, fp=0, fn=0, tn=1, precision=1.0, recall=1.0, f1=1.0
+        ),
+        previous_ambiguity={},
+        proposed_ambiguity={},
+        total_metric_calls=50,
+        configured_metric_budget=300,
+    )
+
+    rendered = _gepa_completion_text(report)
+
+    assert rendered.plain == (
+        "GEPA stopped early: perfect training score · 50/300 metric calls"
+    )
+
+
+def test_gepa_completion_keeps_budget_message_when_not_early() -> None:
+    candidate = CandidateSpec(
+        instructions="Is it relevant?",
+        true_criteria="Relevant.",
+        false_criteria="Not relevant.",
+    )
+    metrics = BinaryMetrics(
+        tp=1, fp=1, fn=1, tn=0, precision=0.5, recall=0.5, f1=0.5
+    )
+    report = RoundReport(
+        previous_candidate=candidate,
+        proposed_candidate=candidate,
+        previous_metrics=metrics,
+        proposed_metrics=metrics,
+        previous_ambiguity={},
+        proposed_ambiguity={},
+        total_metric_calls=300,
+        configured_metric_budget=300,
+    )
+
+    rendered = _gepa_completion_text(report)
+
+    assert rendered.plain.startswith("GEPA metric calls: 300 actual / 300 configured")
 
 
 def test_score_gepa_metric_is_rendered_as_one_compact_row() -> None:
@@ -504,6 +570,7 @@ def test_update_check_can_be_disabled(monkeypatch) -> None:
 
 
 def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -552,6 +619,7 @@ def test_bare_command_can_open_existing_functions(monkeypatch) -> None:
 def test_wizard_advanced_settings_enable_larger_batches_and_holdout(
     monkeypatch,
 ) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
     monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
@@ -598,6 +666,7 @@ def test_wizard_row_default_uses_all_when_dataset_is_under_1000(
 
 
 def test_wizard_can_select_first_n_rows(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -615,6 +684,7 @@ def test_wizard_can_select_first_n_rows(monkeypatch) -> None:
 
 
 def test_wizard_can_select_specific_columns(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -636,6 +706,7 @@ def test_wizard_can_select_specific_columns(monkeypatch) -> None:
 
 
 def test_wizard_can_choose_a_different_reflection_model(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -704,6 +775,7 @@ def test_reflection_picker_defaults_to_haiku_with_only_claude_key(
 
 
 def test_wizard_builds_multiclass_definition(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -734,6 +806,7 @@ def test_wizard_builds_multiclass_definition(monkeypatch) -> None:
 
 
 def test_wizard_builds_multilabel_definition(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -759,6 +832,7 @@ def test_wizard_builds_multilabel_definition(monkeypatch) -> None:
 
 
 def test_wizard_builds_score_definition(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     captured = {}
 
@@ -833,6 +907,7 @@ def test_packaged_examples_are_offered_without_local_datasets(
 
 
 def test_example_datasets_use_preconfigured_flows(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
     captured = []
     selected_path = {"value": (SAMPLE_DATA / "hn-stories.csv").resolve()}
     monkeypatch.setattr(cli, "_choose_dataset", lambda _root: selected_path["value"])
