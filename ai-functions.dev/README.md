@@ -59,17 +59,22 @@ only and accepts artifacts up to 50 MiB.
 
 Registry metadata is split by behavior: `functions.metadata_json` holds
 optional descriptive fields, `function_stats` holds fast function-level totals,
-and `function_version_stats` preserves download and run attribution by version.
+and `function_version_stats` preserves view, download, and run attribution by version.
 `function_likes` is the canonical per-user relationship, with its aggregate
-count denormalized into `function_stats`. Artifact downloads increment both
-function and version totals transactionally. Run counts must come from an
-explicit, opt-in client signal rather than hidden runtime telemetry.
+count denormalized into `function_stats`. Successful detail reads increment views;
+immutable artifact pulls increment downloads. Browser annotation reads do not count
+as downloads. Both counters are maintained at function and version level. Run counts
+must come from an explicit, opt-in client signal rather than hidden runtime telemetry.
 
 Public discovery endpoints are:
 
-- `GET /api/v1/functions` for the latest registry cards.
+- `GET /api/v1/functions?sort=views|downloads` for registry cards, defaulting to
+  views.
 - `GET /api/v1/functions/:namespace/:slug` for the safe definition, input
-  signature, metrics, and version history. Labeled rows are excluded.
+  signature, metrics, and version history. Successful reads count as views;
+  labeled rows are excluded.
+- `GET /api/v1/functions/:namespace/:slug/versions/:version/annotations` for
+  browser label and rationale inspection without incrementing downloads.
 - `GET /api/v1/functions/:namespace/:slug/versions/:version/artifact` for the
   immutable, digest-identified artifact used by `jeva pull`.
 

@@ -20,8 +20,10 @@ interface FunctionRow {
   holdout_annotation_count: number;
   rationale_count: number;
   likes_count: number;
+  views_count: number;
   downloads_count: number;
   runs_count: number;
+  version_views_count: number;
   version_downloads_count: number;
   version_runs_count: number;
   updated_at: string;
@@ -44,6 +46,7 @@ interface VersionRow {
   training_annotation_count: number;
   holdout_annotation_count: number;
   rationale_count: number;
+  views_count: number;
   downloads_count: number;
   runs_count: number;
   created_at: string;
@@ -85,8 +88,11 @@ function publicFunctionQuery(version: number | null): string {
                  function_versions.summary_json,
                  function_versions.created_at,
                  COALESCE(function_stats.likes_count, 0) AS likes_count,
+                 COALESCE(function_stats.views_count, 0) AS views_count,
                  COALESCE(function_stats.downloads_count, 0) AS downloads_count,
                  COALESCE(function_stats.runs_count, 0) AS runs_count,
+                 COALESCE(function_version_stats.views_count, 0)
+                   AS version_views_count,
                  COALESCE(function_version_stats.downloads_count, 0)
                    AS version_downloads_count,
                  COALESCE(function_version_stats.runs_count, 0)
@@ -138,8 +144,10 @@ function functionPayload(row: FunctionVersionRow) {
     holdoutAnnotations: row.holdout_annotation_count,
     rationales: row.rationale_count,
     likes: row.likes_count,
+    views: row.views_count,
     downloads: row.downloads_count,
     runs: row.runs_count,
+    versionViews: row.version_views_count,
     versionDownloads: row.version_downloads_count,
     versionRuns: row.version_runs_count,
     createdAt: row.created_at,
@@ -147,7 +155,13 @@ function functionPayload(row: FunctionVersionRow) {
   };
 }
 
-export async function listFunctions(env: FunctionsEnv): Promise<Response> {
+export type FunctionSort = "views" | "downloads";
+
+export async function listFunctions(
+  env: FunctionsEnv,
+  sort: FunctionSort = "views",
+): Promise<Response> {
+  const orderBy = sort === "downloads" ? "downloads_count" : "views_count";
   const result = await env.DB.prepare(
     `SELECT namespaces.slug AS namespace_slug,
             functions.slug,
@@ -160,8 +174,11 @@ export async function listFunctions(env: FunctionsEnv): Promise<Response> {
             function_versions.holdout_annotation_count,
             function_versions.rationale_count,
             COALESCE(function_stats.likes_count, 0) AS likes_count,
+            COALESCE(function_stats.views_count, 0) AS views_count,
             COALESCE(function_stats.downloads_count, 0) AS downloads_count,
             COALESCE(function_stats.runs_count, 0) AS runs_count,
+            COALESCE(function_version_stats.views_count, 0)
+              AS version_views_count,
             COALESCE(function_version_stats.downloads_count, 0)
               AS version_downloads_count,
             COALESCE(function_version_stats.runs_count, 0)
@@ -175,7 +192,7 @@ export async function listFunctions(env: FunctionsEnv): Promise<Response> {
          ON function_version_stats.function_version_id = function_versions.id
       WHERE functions.visibility = 'public'
         AND functions.unpublished_at IS NULL
-      ORDER BY functions.updated_at DESC
+      ORDER BY ${orderBy} DESC, functions.updated_at DESC
       LIMIT 100`,
   ).all<FunctionRow>();
 
@@ -192,8 +209,10 @@ export async function listFunctions(env: FunctionsEnv): Promise<Response> {
         holdoutAnnotations: row.holdout_annotation_count,
         rationales: row.rationale_count,
         likes: row.likes_count,
+        views: row.views_count,
         downloads: row.downloads_count,
         runs: row.runs_count,
+        versionViews: row.version_views_count,
         versionDownloads: row.version_downloads_count,
         versionRuns: row.version_runs_count,
         updatedAt: row.updated_at,
@@ -241,6 +260,7 @@ export async function getFunction(
             function_versions.training_annotation_count,
             function_versions.holdout_annotation_count,
             function_versions.rationale_count,
+            COALESCE(function_version_stats.views_count, 0) AS views_count,
             COALESCE(function_version_stats.downloads_count, 0) AS downloads_count,
             COALESCE(function_version_stats.runs_count, 0) AS runs_count,
             function_versions.created_at
@@ -252,6 +272,27 @@ export async function getFunction(
   )
     .bind(row.function_id)
     .all<VersionRow>();
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO function_stats (
+         function_id, likes_count, views_count, downloads_count, runs_count, updated_at
+       ) VALUES (?, 0, 1, 0, 0, ?)
+       ON CONFLICT(function_id) DO UPDATE SET
+         views_count = function_stats.views_count + 1,
+         updated_at = excluded.updated_at`,
+    ).bind(row.function_id, now),
+    env.DB.prepare(
+      `INSERT INTO function_version_stats (
+         function_version_id, views_count, downloads_count, runs_count, updated_at
+       ) VALUES (?, 1, 0, 0, ?)
+       ON CONFLICT(function_version_id) DO UPDATE SET
+         views_count = function_version_stats.views_count + 1,
+         updated_at = excluded.updated_at`,
+    ).bind(row.function_version_id, now),
+  ]);
+  row.views_count += 1;
+  row.version_views_count += 1;
   return Response.json({
     ...functionPayload(row),
     inputs: summary.inputs,
@@ -266,6 +307,10 @@ export async function getFunction(
       trainingAnnotations: item.training_annotation_count,
       holdoutAnnotations: item.holdout_annotation_count,
       rationales: item.rationale_count,
+      views:
+        item.version_number === row.version_number
+          ? item.views_count + 1
+          : item.views_count,
       downloads: item.downloads_count,
       runs: item.runs_count,
       createdAt: item.created_at,
@@ -273,6 +318,39 @@ export async function getFunction(
   }, {
     headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
   });
+}
+
+export async function getFunctionAnnotations(
+  env: FunctionsEnv,
+  namespace: string,
+  slug: string,
+  version: number,
+): Promise<Response> {
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new HttpError(400, "version_invalid", "Function version must be positive");
+  }
+  const row = await findPublicFunction(env, namespace, slug, version);
+  const artifact = await env.ARTIFACTS.get(row.artifact_key);
+  if (!artifact) {
+    throw new HttpError(503, "artifact_unavailable", "Function artifact is unavailable");
+  }
+  let parsed: unknown;
+  try {
+    parsed = await artifact.json();
+  } catch {
+    throw new HttpError(503, "artifact_invalid", "Function artifact is unavailable");
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !Array.isArray((parsed as { annotations?: unknown }).annotations)
+  ) {
+    throw new HttpError(503, "artifact_invalid", "Function artifact is unavailable");
+  }
+  return Response.json(
+    { annotations: (parsed as { annotations: unknown[] }).annotations },
+    { headers: { "Cache-Control": "public, max-age=0, must-revalidate" } },
+  );
 }
 
 export async function downloadFunctionArtifact(
@@ -293,16 +371,16 @@ export async function downloadFunctionArtifact(
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO function_stats (
-         function_id, likes_count, downloads_count, runs_count, updated_at
-       ) VALUES (?, 0, 1, 0, ?)
+         function_id, likes_count, views_count, downloads_count, runs_count, updated_at
+       ) VALUES (?, 0, 0, 1, 0, ?)
        ON CONFLICT(function_id) DO UPDATE SET
          downloads_count = function_stats.downloads_count + 1,
          updated_at = excluded.updated_at`,
     ).bind(row.function_id, now),
     env.DB.prepare(
       `INSERT INTO function_version_stats (
-         function_version_id, downloads_count, runs_count, updated_at
-       ) VALUES (?, 1, 0, ?)
+         function_version_id, views_count, downloads_count, runs_count, updated_at
+       ) VALUES (?, 0, 1, 0, ?)
        ON CONFLICT(function_version_id) DO UPDATE SET
          downloads_count = function_version_stats.downloads_count + 1,
          updated_at = excluded.updated_at`,

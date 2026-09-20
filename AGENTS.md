@@ -471,9 +471,12 @@ feature work.
 
 The core HTTP routes are:
 
-- `GET /api/v1/functions`: public discovery feed.
+- `GET /api/v1/functions?sort=views|downloads`: public discovery feed, defaulting
+  to views.
 - `GET /api/v1/functions/:namespace/:slug`: public function metadata and safe
-  definition details.
+  definition details; successful reads increment function and version views.
+- `GET /api/v1/functions/:namespace/:slug/versions/:version/annotations`: public
+  label and rationale inspection without incrementing downloads.
 - `GET /api/v1/functions/:namespace/:slug/versions/:version/artifact`: immutable
   artifact download.
 - `PUT /api/v1/functions/:slug`: authenticated publish or republish; namespace
@@ -489,7 +492,9 @@ The core HTTP routes are:
 Public feed, detail, and artifact queries must all apply the same visibility and
 `unpublished_at` rules. Publishing an unpublished function must restore it even
 if its artifact digest already exists. Keep artifact downloads digest-verified
-and do not add caching that could bypass a later unpublish check.
+and do not add caching that could bypass a later unpublish check. Only immutable
+artifact pulls count as downloads; browser annotation inspection must not inflate
+that counter.
 
 For local registry work:
 

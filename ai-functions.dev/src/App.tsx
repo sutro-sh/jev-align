@@ -11,9 +11,11 @@ interface FunctionSummary {
   holdoutAnnotations: number;
   rationales: number;
   likes: number;
+  views: number;
   downloads: number;
   runs: number;
   versionDownloads: number;
+  versionViews: number;
   versionRuns: number;
   updatedAt: string;
 }
@@ -25,6 +27,7 @@ interface FunctionVersion {
   trainingAnnotations: number;
   holdoutAnnotations: number;
   rationales: number;
+  views: number;
   downloads: number;
   runs: number;
   createdAt: string;
@@ -60,6 +63,8 @@ type FeedState =
   | { status: "loading"; functions: FunctionSummary[] }
   | { status: "ready"; functions: FunctionSummary[] }
   | { status: "error"; functions: FunctionSummary[] };
+
+type FunctionSort = "views" | "downloads";
 
 type DetailState =
   | { status: "loading"; detail: null }
@@ -129,6 +134,7 @@ function FunctionCard({ item, index }: { item: FunctionSummary; index: number })
             <div><dt>annotations</dt><dd>{totalAnnotations}</dd></div>
             <div><dt>training</dt><dd>{item.trainingAnnotations}</dd></div>
             <div><dt>held out</dt><dd>{item.holdoutAnnotations}</dd></div>
+            <div><dt>views</dt><dd>{item.views}</dd></div>
             <div><dt>downloads</dt><dd>{item.downloads}</dd></div>
             <div><dt>updated</dt><dd>{timestamp(item.updatedAt)}</dd></div>
           </dl>
@@ -144,9 +150,11 @@ function FunctionCard({ item, index }: { item: FunctionSummary; index: number })
 
 function Feed() {
   const [feed, setFeed] = useState<FeedState>({ status: "loading", functions: [] });
+  const [sort, setSort] = useState<FunctionSort>("views");
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/v1/functions", { signal: controller.signal })
+    setFeed({ status: "loading", functions: [] });
+    fetch(`/api/v1/functions?sort=${sort}`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Registry request failed");
         return response.json() as Promise<{ functions: FunctionSummary[] }>;
@@ -157,7 +165,7 @@ function Feed() {
         setFeed({ status: "error", functions: [] });
       });
     return () => controller.abort();
-  }, []);
+  }, [sort]);
   return (
     <div className="registry">
       <Header context="registry" />
@@ -188,9 +196,28 @@ function Feed() {
           Want private hosting for your team?{" "}
           <a href="mailto:team@sutro.sh">Contact us.</a>
         </p>
-        <div className="list-label" aria-hidden="true">
+        <div className="list-label">
           <span>index / function</span>
-          <span>{feed.status === "ready" ? `${feed.functions.length} public` : "latest first"}</span>
+          <div className="feed-controls">
+            <span>{feed.status === "ready" ? `${feed.functions.length} public` : "reading"}</span>
+            <span>sort</span>
+            <button
+              type="button"
+              className={sort === "views" ? "active" : ""}
+              aria-pressed={sort === "views"}
+              onClick={() => setSort("views")}
+            >
+              views
+            </button>
+            <button
+              type="button"
+              className={sort === "downloads" ? "active" : ""}
+              aria-pressed={sort === "downloads"}
+              onClick={() => setSort("downloads")}
+            >
+              downloads
+            </button>
+          </div>
         </div>
         {feed.status === "loading" ? <SystemMessage>reading registry…</SystemMessage> : null}
         {feed.status === "error" ? <SystemMessage error>registry unavailable</SystemMessage> : null}
@@ -352,7 +379,7 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
     try {
       const path = detail.reference.split("/").map(encodeURIComponent).join("/");
       const response = await fetch(
-        `/api/v1/functions/${path}/versions/${version}/artifact`,
+        `/api/v1/functions/${path}/versions/${version}/annotations`,
       );
       if (!response.ok) throw new Error("Artifact request failed");
       const artifact = (await response.json()) as FunctionArtifact;
@@ -380,6 +407,7 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
         <div><dt>task</dt><dd>{detail.taskType}</dd></div>
         <div><dt>annotations</dt><dd>{annotationCount}</dd></div>
         <div><dt>rationales</dt><dd>{detail.rationales}</dd></div>
+        <div><dt>views</dt><dd>{detail.views}</dd></div>
         <div><dt>downloads</dt><dd>{detail.downloads}</dd></div>
         <div><dt>backend</dt><dd>{detail.backend.provider} / {detail.backend.model}</dd></div>
         <div><dt>updated</dt><dd>{timestamp(detail.updatedAt)}</dd></div>
@@ -406,6 +434,7 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
             <div className="version-row" role="row" key={version.version}>
               <strong>v{version.version}</strong>
               <span>{version.trainingAnnotations + version.holdoutAnnotations} labels</span>
+              <span>{version.views} views</span>
               <span>{version.downloads} downloads</span>
               <span>{timestamp(version.createdAt)}</span>
               <code>{version.digest.slice(0, 10)}</code>

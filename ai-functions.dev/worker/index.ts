@@ -5,6 +5,7 @@ import {
   errorResponse,
   exchangeGithubToken,
   finishGithubLogin,
+  HttpError,
   logout,
   revokeCurrentToken,
   startGithubLogin,
@@ -13,6 +14,7 @@ import { publishFunction } from "./publish";
 import { unpublishFunction } from "./unpublish";
 import {
   downloadFunctionArtifact,
+  getFunctionAnnotations,
   getFunction,
   listFunctions,
 } from "./functions";
@@ -38,7 +40,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return authConfig(env);
     }
     if (request.method === "GET" && url.pathname === "/api/v1/functions") {
-      return await listFunctions(env);
+      const sort = url.searchParams.get("sort") ?? "views";
+      if (sort !== "views" && sort !== "downloads") {
+        throw new HttpError(400, "sort_invalid", "Sort must be views or downloads");
+      }
+      return await listFunctions(env, sort);
     }
     if (request.method === "GET" && url.pathname === "/api/auth/github/start") {
       return startGithubLogin(request, env);
@@ -67,6 +73,17 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         decodeURIComponent(artifactMatch[1]),
         decodeURIComponent(artifactMatch[2]),
         Number(artifactMatch[3]),
+      );
+    }
+    const annotationsMatch = url.pathname.match(
+      /^\/api\/v1\/functions\/([^/]+)\/([^/]+)\/versions\/(\d+)\/annotations$/,
+    );
+    if (request.method === "GET" && annotationsMatch) {
+      return await getFunctionAnnotations(
+        env,
+        decodeURIComponent(annotationsMatch[1]),
+        decodeURIComponent(annotationsMatch[2]),
+        Number(annotationsMatch[3]),
       );
     }
     const detailMatch = url.pathname.match(/^\/api\/v1\/functions\/([^/]+)\/([^/]+)$/);

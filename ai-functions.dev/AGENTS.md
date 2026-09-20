@@ -11,6 +11,8 @@ self-contained because it will move to a separate repository.
 - Function artifacts contain accepted definitions and annotations, but
   never API keys, raw unlabeled datasets, GEPA logs, or pending candidates.
 - Published versions are immutable. Updating a function creates a new version.
+- Successful detail reads count as views. Only immutable artifact pulls count as
+  downloads; annotation inspection must use its non-counting endpoint.
 - Personal namespaces use immutable GitHub user IDs internally; GitHub logins
   are mutable display and routing identifiers.
 - GitHub browser and device tokens are only used to verify identity. Never log

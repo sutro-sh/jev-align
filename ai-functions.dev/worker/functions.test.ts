@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { downloadFunctionArtifact, getFunction, listFunctions } from "./functions";
+import {
+  downloadFunctionArtifact,
+  getFunction,
+  getFunctionAnnotations,
+  listFunctions,
+} from "./functions";
 
 class FakeStatement {
   async all() {
@@ -18,8 +23,10 @@ class FakeStatement {
           holdout_annotation_count: 2,
           rationale_count: 7,
           likes_count: 31,
+          views_count: 450,
           downloads_count: 120,
           runs_count: 4800,
+          version_views_count: 210,
           version_downloads_count: 52,
           version_runs_count: 900,
           updated_at: "2026-09-20T17:31:43.442Z",
@@ -31,8 +38,14 @@ class FakeStatement {
 
 describe("public function feed", () => {
   it("returns latest public function metadata", async () => {
+    let query = "";
     const env = {
-      DB: { prepare: () => new FakeStatement() },
+      DB: {
+        prepare(sql: string) {
+          query = sql;
+          return new FakeStatement();
+        },
+      },
     } as unknown as Parameters<typeof listFunctions>[0];
 
     const response = await listFunctions(env);
@@ -51,14 +64,20 @@ describe("public function feed", () => {
           holdoutAnnotations: 2,
           rationales: 7,
           likes: 31,
+          views: 450,
           downloads: 120,
           runs: 4800,
+          versionViews: 210,
           versionDownloads: 52,
           versionRuns: 900,
           updatedAt: "2026-09-20T17:31:43.442Z",
         },
       ],
     });
+    expect(query).toContain("ORDER BY views_count DESC");
+
+    await listFunctions(env, "downloads");
+    expect(query).toContain("ORDER BY downloads_count DESC");
   });
 
   it("returns public metadata and downloads an immutable artifact", async () => {
@@ -86,8 +105,10 @@ describe("public function feed", () => {
       holdout_annotation_count: 2,
       rationale_count: 7,
       likes_count: 31,
+      views_count: 450,
       downloads_count: 120,
       runs_count: 4800,
+      version_views_count: 210,
       version_downloads_count: 52,
       version_runs_count: 900,
       created_at: "2026-09-19T17:31:43.442Z",
@@ -117,6 +138,7 @@ describe("public function feed", () => {
                   training_annotation_count: 10,
                   holdout_annotation_count: 2,
                   rationale_count: 7,
+                  views_count: 210,
                   downloads_count: 52,
                   runs_count: 900,
                   created_at: "2026-09-19T17:31:43.442Z",
@@ -136,7 +158,13 @@ describe("public function feed", () => {
       ARTIFACTS: {
         async get(key: string) {
           expect(key).toBe(row.artifact_key);
-          return { body: new Response('{"schema_version":1}').body };
+          const payload = '{"schema_version":1,"annotations":[{"label":true}]}'
+          return {
+            body: new Response(payload).body,
+            async json() {
+              return JSON.parse(payload);
+            },
+          };
         },
       },
     } as unknown as Parameters<typeof getFunction>[0];
@@ -147,11 +175,25 @@ describe("public function feed", () => {
       reference: "octocat/is-aviation",
       version: 2,
       digest: "abc123",
+      views: 451,
       downloads: 120,
       inputs: { columns: ["text"], mode: "selected" },
       definition: { instructions: "Is this aviation?" },
-      versions: [{ version: 2, downloads: 52 }],
+      versions: [{ version: 2, views: 211, downloads: 52 }],
     });
+    expect(batches).toHaveLength(1);
+    expect(prepared.some((item) => item.sql.includes("views_count = function_stats.views_count + 1"))).toBe(
+      true,
+    );
+
+    const annotations = await getFunctionAnnotations(
+      env,
+      "octocat",
+      "is-aviation",
+      2,
+    );
+    await expect(annotations.json()).resolves.toEqual({ annotations: [{ label: true }] });
+    expect(batches).toHaveLength(1);
 
     const artifact = await downloadFunctionArtifact(
       env,
@@ -161,8 +203,8 @@ describe("public function feed", () => {
     );
     expect(artifact.headers.get("X-Jeva-Digest")).toBe("abc123");
     expect(artifact.headers.get("Cache-Control")).toContain("must-revalidate");
-    await expect(artifact.text()).resolves.toBe('{"schema_version":1}');
-    expect(batches).toHaveLength(1);
+    await expect(artifact.text()).resolves.toContain('"annotations"');
+    expect(batches).toHaveLength(2);
     expect(prepared.some((item) => item.sql.includes("function_version_stats"))).toBe(
       true,
     );

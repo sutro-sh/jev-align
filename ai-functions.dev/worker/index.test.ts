@@ -36,6 +36,21 @@ describe("API worker", () => {
     });
   });
 
+  it("rejects unsupported feed sorting", async () => {
+    const response = await handleRequest(
+      new Request("https://ai-functions.dev/api/v1/functions?sort=likes"),
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "sort_invalid",
+        message: "Sort must be views or downloads",
+      },
+    });
+  });
+
   it("exposes the GitHub App client ID without exposing secrets", async () => {
     const response = await handleRequest(
       new Request("https://ai-functions.dev/api/v1/config"),
