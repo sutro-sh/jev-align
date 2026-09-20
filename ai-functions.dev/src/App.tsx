@@ -419,7 +419,7 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
       <section className="detail-section annotations-section" aria-live="polite">
         <div className="section-heading">
           <div>
-            <h3>human labels &amp; rationales</h3>
+            <h3>labels &amp; rationales</h3>
             <p>Published examples used to evaluate and continue improving this function.</p>
           </div>
           {annotations.status === "ready" ? (
@@ -446,7 +446,7 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
         {annotations.status === "ready" ? (
           <>
             <div className="annotation-summary">
-              v{annotations.version} / {annotations.annotations.length} human label{annotations.annotations.length === 1 ? "" : "s"}
+              v{annotations.version} / {annotations.annotations.length} label{annotations.annotations.length === 1 ? "" : "s"}
             </div>
             <div className="annotation-list">
               {annotations.annotations.slice(0, visibleCount).map((annotation, index) => (

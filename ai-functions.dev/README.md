@@ -69,7 +69,7 @@ Public discovery endpoints are:
 
 - `GET /api/v1/functions` for the latest registry cards.
 - `GET /api/v1/functions/:namespace/:slug` for the safe definition, input
-  signature, metrics, and version history. Human-labeled rows are excluded.
+  signature, metrics, and version history. Labeled rows are excluded.
 - `GET /api/v1/functions/:namespace/:slug/versions/:version/artifact` for the
   immutable, digest-identified artifact used by `jeva pull`.
 

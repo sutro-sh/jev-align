@@ -108,7 +108,7 @@ class FunctionArtifact(BaseModel):
         if not self.inputs.columns:
             raise ValueError("function artifacts require at least one input column")
         if not self.annotations:
-            raise ValueError("function artifacts require at least one human annotation")
+            raise ValueError("function artifacts require at least one annotation")
         expected = (
             set(self.inputs.columns)
             if self.inputs.mode == "selected"
@@ -219,7 +219,7 @@ def build_function_artifact(
         )
     labels = store.load_labels()
     if not labels:
-        raise ArtifactError("an AI Function needs at least one human label before publishing")
+        raise ArtifactError("an AI Function needs at least one label before publishing")
     columns = _selected_columns(state, labels)
     inputs_by_story = _story_inputs(state, store, labels, columns)
     annotations = [

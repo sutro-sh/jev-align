@@ -1,8 +1,9 @@
 # AGENTS.md
 
 This repository contains `jev-align`, an interactive active-learning CLI for
-building AI Functions from a user's judgments. Coding agents may help configure
-and operate the workflow, but must preserve the human labeling loop.
+building AI Functions from labeled examples. Coding agents may help configure
+and operate the workflow, but must preserve explicit control over how labels are
+created and reviewed.
 
 ## Installation reference
 
@@ -31,10 +32,14 @@ Python and pip. Set `JEVA_DISABLE_UPDATE_CHECK=1` to disable the check.
 
 ### Core rule
 
-The user supplies every label. Do not skip examples, silently infer labels, or
-accept an optimized definition on the user's behalf. A rationale is optional,
-but encourage one when it explains an important boundary or corrects the
-model's reasoning.
+In the guided labeling flow, do not skip examples or silently infer labels.
+Enter exactly what the user chooses. If the user explicitly authorizes
+synthetic, imported, or agent-generated labels, do not describe them as
+human-created or human-reviewed. Human review is encouraged, especially for
+important tasks and boundary cases, but it is not a registry-wide guarantee.
+Never accept an optimized definition on the user's behalf. A rationale is
+optional, but encourage one when it explains an important boundary or corrects
+the model's reasoning.
 
 ### Before starting
 
@@ -258,14 +263,16 @@ Published artifacts include only:
 
 - The accepted definition and portable input signature.
 - Safe backend identity and learning configuration.
-- Human-labeled inputs, labels, train/holdout splits, and rationales.
+- Labeled inputs, labels, train/holdout splits, and rationales.
 - A summary of the accepted function's metrics.
 
 They exclude unlabeled source rows, local source paths, pending proposals,
 provider options that may contain secrets, API credentials, and reflection
 credentials. Never approve public-data confirmation for the user. If the
 labeled inputs or rationales may be sensitive, stop and ask the user rather than
-publishing.
+publishing. The registry does not verify annotation provenance. Encourage
+publishers to disclose synthetic or agent-generated labels in the function
+description when that distinction matters.
 
 #### Pulling
 
@@ -277,11 +284,12 @@ jeva pull GITHUB_USER/FUNCTION_NAME --version 2
 ```
 
 Pull verifies the artifact's SHA-256 digest and materializes the immutable
-version as a normal run under `.jev-align/runs/`. All published annotations are
-already human-labeled, so never ask the user to relabel them or invent new
-labels. Continue learning only when genuinely new captured inputs are
-available. Never overwrite an existing pull destination; use `--output` when a
-different location is needed.
+version as a normal run under `.jev-align/runs/`. Published annotations are
+already labeled, so do not ask the user to repeat them merely because their
+provenance is unknown. Do not claim they were human-reviewed unless the
+publisher says so. Continue learning only when genuinely new captured inputs
+are available. Never overwrite an existing pull destination; use `--output`
+when a different location is needed.
 
 #### Unpublishing
 
@@ -305,7 +313,8 @@ When the user asks an agent to share a function:
 
 1. Identify the exact saved run and ensure it has an accepted definition.
 2. Show the proposed name, description, reference, and public data boundary.
-3. Obtain the user's explicit approval to publish labeled inputs and rationales.
+3. Obtain the user's explicit approval to publish labeled inputs and rationales,
+   and accurately describe any known synthetic or agent-generated labeling.
 4. Authenticate with `jeva login` if necessary; the user completes GitHub's
    browser/device authorization.
 5. Run `jeva push` and report the canonical `https://ai-functions.dev/...` URL.
@@ -320,7 +329,7 @@ asking for approval.
 ### Continual learning from live calls
 
 Applications can call an accepted AI Function and record uncertain or randomly
-audited predictions for later human labeling. Install `jev-align` in the
+audited predictions for later labeling and review. Install `jev-align` in the
 application environment and load the saved run with capture enabled:
 
 ```python
@@ -338,7 +347,7 @@ prediction = is_aviation(
 ```
 
 Calls must use the input columns configured for the saved run and return a
-normalized `Prediction`, not a human label. Capture adds no model call and writes
+normalized `Prediction`, not a confirmed label. Capture adds no model call and writes
 selected observations to `.jev-align/captures/` in the background. A recorder
 created by `capture=True` is flushed automatically at process shutdown. Call the
 AI Function's `close()` method or use it as a context manager when deterministic
@@ -353,10 +362,12 @@ jeva optimize --resume .jev-align/runs/RUN_ID
 
 When the CLI offers newly captured calls, let the user decide whether to import
 them. Every unique eligible call is imported; there is no capture-pool row cap.
-The model's recorded prediction is never treated as truth. The user must label
-every selected example, with an optional rationale, before GEPA can learn from
-it. Previously labeled captures remain in the evaluation pool, while only
-unlabeled inputs are eligible for another annotation batch.
+The model's recorded prediction is never automatically treated as truth. Every
+selected example must receive an explicit label, with an optional rationale,
+before GEPA can learn from it. Labels may be user-created or generated with the
+user's explicit authorization. Previously labeled captures remain in the
+evaluation pool, while only unlabeled inputs are eligible for another annotation
+batch.
 
 The accepted definition is loaded when `AIFunction.load(...)` runs. Restart the
 process or reload the AI Function to use a newly accepted version.
@@ -377,7 +388,7 @@ default it records predictions with ambiguity of at least 0.8 and a random 5%
 audit of the remainder. For binary tasks, 0.8 ambiguity corresponds to
 probabilities from 0.4 through 0.6. Each record includes the evaluated input,
 prediction, definition, model provenance, and selection reason, but none of
-those values constitute a human label.
+those values constitute a confirmed annotation.
 
 Capture uses JSONL files under `.jev-align/captures/`; it requires no database or
 server. Records enter a bounded queue and a background thread writes batches of
@@ -400,7 +411,7 @@ stored in the run's `captured-inputs.json`, so removing the raw logs does not
 remove them from that run.
 
 Captured inputs use the normal full-pool evaluation, prediction cache, and batch
-selection. Human labels from captures join training, while the original pool and
+selection. Confirmed labels from captures join training, while the original pool and
 holdout remain fixed. Reports show captured-pool uncertainty separately so the
 original fixed-pool history remains comparable. Pending GEPA proposals must be
 resolved before importing new captures, and every new proposal still requires
@@ -518,11 +529,11 @@ routes must enforce the `functions:write` scope plus the required namespace
 role.
 
 Capture files are unlabeled observations, not run state. Never treat their model
-predictions as human labels. Resuming a saved function offers to import matching
+predictions as confirmed labels. Resuming a saved function offers to import matching
 captured calls from the current or run workspace's `.jev-align/captures/` and
 optional `JEVA_CAPTURE_DIR`. Resolve pending proposals first. Approved inputs
 are persisted in `captured-inputs.json` inside the run; treat this as application
-state. Human labels from captures join training, while the original fixed pool
+state. Confirmed labels from captures join training, while the original fixed pool
 and holdout remain unchanged. Keep capture writes off the evaluation path and
 preserve bounded queues, file-size limits, and nonblocking overflow behavior.
 Original and captured pools share evaluation, prediction caching, and batch
@@ -538,7 +549,8 @@ a compatibility alias for `--backend-model`.
 
 Preserve these product invariants when making changes:
 
-- The human explicitly confirms every label.
+- Guided labeling never silently invents or skips a label; synthetic or
+  agent-generated labeling requires explicit user authorization.
 - Proposed prompts are shown as a diff before acceptance.
 - The accepted candidate seeds the next optimization round.
 - Full-pool uncertainty remains comparable across rounds.

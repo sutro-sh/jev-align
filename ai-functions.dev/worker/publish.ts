@@ -76,7 +76,7 @@ export function summarizeArtifact(value: unknown, pathSlug: string): ArtifactSum
     throw new HttpError(400, "artifact_invalid", "Artifact backend is invalid");
   }
   if (!Array.isArray(value.annotations) || value.annotations.length === 0) {
-    throw new HttpError(400, "artifact_invalid", "Artifact must contain human annotations");
+    throw new HttpError(400, "artifact_invalid", "Artifact must contain annotations");
   }
   let trainingCount = 0;
   let holdoutCount = 0;

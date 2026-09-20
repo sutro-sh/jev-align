@@ -7,11 +7,13 @@ Jeva. The website is read-only. Create, improve, and publish functions with the
 Project: https://github.com/sutro-sh/jev-align
 Registry: https://ai-functions.dev
 
-## Non-negotiable rule
+## Labeling rule
 
-The human supplies every label and decides whether to accept every optimized
-definition. Never infer labels, skip examples, invent rationales, or accept a
-GEPA proposal for the user. A rationale is optional.
+The user controls how labels are created and decides whether to accept every
+optimized definition. In the guided flow, never infer or skip labels unless the
+user explicitly authorizes synthetic or agent-generated labeling. Do not
+describe generated labels as human-reviewed. A rationale is optional, and human
+review is encouraged for important tasks and boundary cases.
 
 ## Install
 
@@ -34,7 +36,7 @@ Browse https://ai-functions.dev or read the public JSON APIs:
     GET https://ai-functions.dev/api/v1/functions/NAMESPACE/SLUG
 
 The detail response includes the public definition, input signature, backend,
-metrics, and version history. The website can show the human-labeled examples
+metrics, and version history. The website can show the labeled examples
 and rationales for a selected version. Published annotations are public data.
 
 ## Pull a function
@@ -46,7 +48,7 @@ No login is required:
 
 Pull verifies the immutable artifact digest and creates a normal saved function
 under `.jev-align/runs/`. Do not overwrite or hand-edit its saved state. Existing
-published annotations are already labeled; do not ask the human to label them
+published annotations are already labeled; do not ask the user to label them
 again.
 
 Use `jeva functions` to inspect, run, or resume a local function. Continuing
@@ -68,15 +70,16 @@ Or provide known setup with flags:
 Before starting, confirm that the user has configured a Jev evaluation provider
 and a GEPA reflection provider. Never print secret values.
 
-During each labeling round:
+During each guided labeling round:
 
 1. Show the input, uncertainty, and whether it is a random audit sample.
-2. Ask the human for the label.
+2. Ask the user for the label, or follow the synthetic/agent-labeling method they
+   explicitly authorized.
 3. Ask for an optional rationale.
-4. Enter exactly the human's answer.
+4. Enter exactly the supplied or authorized generated answer.
 5. After GEPA runs, summarize the metric change, certainty change, regression
    risk, and definition diff.
-6. Ask the human to accept, reject, or stop and resume later.
+6. Ask the user to accept, reject, or stop and resume later.
 
 There is no skip action. At the label picker, `b` goes backward. At the
 rationale prompt, `/back` returns to the label picker; a literal `b` is valid
@@ -89,7 +92,7 @@ rationale text.
 
 The registry derives the namespace from the authenticated GitHub identity. A
 push publishes the accepted definition, safe backend identity, learning
-configuration, and human-labeled inputs, labels, splits, and rationales. It does
+configuration, and labeled inputs, labels, splits, and rationales. It does
 not publish unlabeled source rows, local source paths, pending proposals,
 backend credentials, or reflection-provider credentials.
 
@@ -132,13 +135,14 @@ Captured calls are unlabeled observations. Resume with `jeva functions` or:
 
     jeva optimize --resume .jev-align/runs/RUN_ID
 
-Let the human decide whether to import newly captured calls, then preserve the
-same human-labeling and proposal-acceptance rules.
+Let the user decide whether to import newly captured calls, then preserve the
+same explicit labeling and proposal-acceptance rules.
 
 ## Safety and data handling
 
 - Never expose API keys, GitHub tokens, session cookies, or keychain contents.
-- Never treat a model prediction as a human label.
+- Never treat a model prediction as a confirmed label without explicit user
+  authorization.
 - Never mutate saved run files by hand.
 - Never publish without explicit public-data approval.
 - Never claim training metrics are held-out generalization results.

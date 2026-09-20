@@ -359,7 +359,7 @@ def _optimizer_background(seed_candidate: TaskSpec) -> str:
             "merge, or contradict the true and false meanings. "
         )
     return task_context + (
-        "Use human labels as authoritative and human rationales as boundary guidance. "
+        "Use the supplied labels as authoritative and rationales as boundary guidance. "
         "Do not alter the state schema, labels, task type, or class set, and do not "
         "memorize story-specific wording."
     )

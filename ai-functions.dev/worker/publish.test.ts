@@ -20,7 +20,7 @@ function artifact() {
 }
 
 describe("function artifact validation", () => {
-  it("summarizes public human annotation counts", () => {
+  it("summarizes public annotation counts", () => {
     expect(summarizeArtifact(artifact(), "is-aviation")).toEqual({
       name: "Is aviation",
       slug: "is-aviation",

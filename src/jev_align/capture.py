@@ -24,7 +24,7 @@ class Capture:
 
     Use as a context manager or call close() at application shutdown. Create
     instances inside each worker process, after forking. Captures are disposable
-    observations, never human labels or changes to an alignment run.
+    observations, never confirmed labels or changes to an alignment run.
     """
 
     def __init__(

@@ -8,7 +8,7 @@ self-contained because it will move to a separate repository.
 - The public Python CLI lives in the parent repository under `src/jev_align/`.
 - Communicate with the CLI through versioned HTTP APIs and function artifacts.
 - Do not import Python implementation details into this application.
-- Function artifacts contain accepted definitions and human annotations, but
+- Function artifacts contain accepted definitions and annotations, but
   never API keys, raw unlabeled datasets, GEPA logs, or pending candidates.
 - Published versions are immutable. Updating a function creates a new version.
 - Personal namespaces use immutable GitHub user IDs internally; GitHub logins

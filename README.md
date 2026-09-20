@@ -39,8 +39,9 @@ Each round:
 4. Shows the score, certainty change, and proposed definition diff.
 5. Lets you accept, reject, rewind, or resume later.
 
-Every label comes from you. A higher training score never accepts a proposal
-automatically.
+The guided workflow asks you to review every label. Labels may be human-created,
+synthetic, imported, or agent-assisted; review them to the standard your use
+case requires. A higher training score never accepts a proposal automatically.
 
 ## Task types
 
@@ -156,11 +157,13 @@ improving the function:
 
 - The accepted definition and input signature.
 - The runtime backend and learning configuration.
-- Human-labeled inputs, labels, splits, and optional rationales.
+- Labeled inputs, labels, splits, and optional rationales.
 
 It does **not** contain unlabeled source rows, local dataset paths, API keys,
 reflection-provider credentials, or an unaccepted proposal. The registry is
 currently public, so do not publish labeled data you cannot share.
+Human review is encouraged for important tasks, but the registry does not claim
+or verify that every published annotation was created or reviewed by a person.
 
 Anyone can pull a public function without signing in:
 

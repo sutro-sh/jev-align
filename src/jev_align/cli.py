@@ -346,7 +346,7 @@ def push_command(
         typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
     ] = None,
 ) -> None:
-    """Publish a saved AI Function and its human annotations."""
+    """Publish a saved AI Function and its annotations."""
     directory = run
     default_name: str | None = None
     if directory is None:
@@ -449,7 +449,7 @@ def push_command(
         details.add_row("Description", artifact.description)
     details.add_row("Task", artifact.task_type)
     details.add_row("Backend", f"{artifact.backend.provider} / {artifact.backend.model}")
-    details.add_row("Human annotations", f"{training} training, {holdout} held out")
+    details.add_row("Annotations", f"{training} training, {holdout} held out")
     details.add_row("Rationales", str(rationales))
     console.print(
         Panel(
@@ -611,7 +611,7 @@ def pull_command(
     details.add_row("Function", f"[bold]{pulled.reference}[/bold]")
     details.add_row("Version", str(pulled.version))
     details.add_row("Task", pulled.artifact.task_type)
-    details.add_row("Human annotations", str(len(annotations)))
+    details.add_row("Annotations", str(len(annotations)))
     details.add_row("Rationales", str(rationales))
     details.add_row("Saved to", str(directory))
     console.print(
@@ -2352,7 +2352,7 @@ def _show_latest_optimized(saved: SavedFunction) -> None:
         "Fixed-pool certainty",
         f"{saved.certainty:.1%}" if saved.certainty is not None else "Not evaluated",
     )
-    scoring.add_row("Human labels", str(saved.label_count))
+    scoring.add_row("Labels", str(saved.label_count))
     console.print(Panel(scoring, title="Scoring"))
 
 
