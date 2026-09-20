@@ -131,29 +131,22 @@ jeva optimize --resume .jev-align/runs/<run-id>
 ## Share on ai-functions.dev
 
 [ai-functions.dev](https://ai-functions.dev/) is the public registry for AI
-Functions built with Jeva. The website is for browsing functions; publishing
-and account actions happen through the CLI.
+Functions built with jev-align. Browse shared functions on the website and
+publish your own from the CLI.
 
-Sign in with GitHub, then publish a saved function:
-
-```shell
-jeva login
-jeva whoami
-jeva push .jev-align/runs/<run-id>
-```
-
-You choose its name and optional description before the first push. The registry
-publishes it at `ai-functions.dev/<github-user>/<function-name>`. Push again to
-publish an improved immutable version or update its description:
+To publish, open your saved functions:
 
 ```shell
-jeva push .jev-align/runs/<run-id> \
-  --description "Finds Hacker News posts about AI."
+jeva functions
 ```
 
-Before uploading, Jeva shows what will be public and asks you to confirm. A
-published artifact contains everything another person needs to run or continue
-improving the function:
+Select a function, then choose **Push to ai-functions.dev**. If needed,
+jev-align walks you through GitHub login. You can name the function, add a
+description, review what will be public, and confirm the push. It will appear at
+`ai-functions.dev/<github-user>/<function-name>`.
+
+A published function includes everything another person needs to run it or
+continue improving it:
 
 - The accepted definition and input signature.
 - The runtime backend and learning configuration.
