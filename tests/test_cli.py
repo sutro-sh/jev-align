@@ -119,7 +119,7 @@ def test_push_requires_public_confirmation_and_saves_publish_metadata(
         ],
     )
     assert published.exit_code == 0
-    assert "Published octocat/aviation version 1" in published.stdout
+    assert "Published Aviation as octocat/aviation version 1" in published.stdout
     assert len(calls) == 1
     assert (run / "published.json").is_file()
 
@@ -183,7 +183,7 @@ def test_interactive_push_logs_in_and_resumes(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert len(authentication_attempts) == 2
     assert logins == [{"registry": None, "no_browser": False}]
-    assert "Published octocat/aviation version 1" in result.stdout
+    assert "Published Aviation as octocat/aviation version 1" in result.stdout
 
 
 def test_unpublish_command_confirms_and_reports_success(monkeypatch) -> None:

@@ -122,12 +122,10 @@ function FunctionCard({ item, index }: { item: FunctionSummary; index: number })
         </div>
         <div className="card-main">
           <div className="card-heading">
-            <h2>{displayReference(item.reference)}</h2>
+            <h2>{item.name}</h2>
             <span className="version">v{item.version}</span>
           </div>
-          {item.name !== item.reference.split("/").at(-1) ? (
-            <p className="display-name">{item.name}</p>
-          ) : null}
+          <p className="display-name">{displayReference(item.reference)}</p>
           {item.description ? <p className="function-description">{item.description}</p> : null}
           <dl className="metadata">
             <div><dt>type</dt><dd>{item.taskType}</dd></div>
@@ -394,10 +392,8 @@ function FunctionDetailView({ detail }: { detail: FunctionDetail }) {
       <div className="detail-heading">
         <div>
           <div className="eyebrow">public AI function / v{detail.version}</div>
-          <h2>{displayReference(detail.reference)}</h2>
-          {detail.name !== detail.reference.split("/").at(-1) ? (
-            <p className="detail-name">{detail.name}</p>
-          ) : null}
+          <h2>{detail.name}</h2>
+          <p className="detail-name">{displayReference(detail.reference)}</p>
           {detail.description ? <p className="detail-description">{detail.description}</p> : null}
         </div>
         <div className="status"><span aria-hidden="true" />public</div>

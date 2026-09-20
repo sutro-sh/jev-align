@@ -444,7 +444,8 @@ def push_command(
     holdout = sum(item.split == "holdout" for item in artifact.annotations)
     rationales = sum(bool(item.rationale) for item in artifact.annotations)
     details = Table.grid(padding=(0, 2))
-    details.add_row("Function", f"[bold]{user['login']}/{artifact.slug}[/bold]")
+    details.add_row("Name", f"[bold]{artifact.name}[/bold]")
+    details.add_row("Reference", f"[bold]{user['login']}/{artifact.slug}[/bold]")
     if artifact.description:
         details.add_row("Description", artifact.description)
     details.add_row("Task", artifact.task_type)
@@ -498,7 +499,8 @@ def push_command(
     )
     status = "Published" if result.created else "Already published"
     console.print(
-        f"[green]✓[/green] {status} [bold]{result.reference}[/bold] "
+        f"[green]✓[/green] {status} [bold]{artifact.name}[/bold] "
+        f"as [bold]{result.reference}[/bold] "
         f"version {result.version}\n[link={result.url}]{result.url}[/link]"
     )
 
