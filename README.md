@@ -5,7 +5,8 @@ AI Functions with [TypeSafe's Jev](https://docs.typesafe.ai/introduction).
 
 It finds uncertain examples, asks you to label them, and uses
 [GEPA](https://gepa-ai.github.io/gepa/) to improve the function. Use it in your
-application and keep learning from production examples.
+application, keep learning from production examples, and share portable
+functions through [ai-functions.dev](https://ai-functions.dev/).
 
 ## Demo
 
@@ -38,8 +39,9 @@ Each round:
 4. Shows the score, certainty change, and proposed definition diff.
 5. Lets you accept, reject, rewind, or resume later.
 
-Every label comes from you. A higher training score never accepts a proposal
-automatically.
+The guided workflow asks you to review every label. Labels may be human-created,
+synthetic, imported, or agent-assisted; review them to the standard your use
+case requires. A higher training score never accepts a proposal automatically.
 
 ## Task types
 
@@ -119,10 +121,69 @@ jeva optimize data.csv --question "Is this relevant?" --column text \
 
 ## Saved AI Functions
 
+Browse, run, or resume functions saved on your computer:
+
 ```shell
 jeva functions
 jeva optimize --resume .jev-align/runs/<run-id>
 ```
+
+## Share on ai-functions.dev
+
+[ai-functions.dev](https://ai-functions.dev/) is the public registry for AI
+Functions built with Jeva. The website is for browsing functions; publishing
+and account actions happen through the CLI.
+
+Sign in with GitHub, then publish a saved function:
+
+```shell
+jeva login
+jeva whoami
+jeva push .jev-align/runs/<run-id>
+```
+
+You choose its name and optional description before the first push. The registry
+publishes it at `ai-functions.dev/<github-user>/<function-name>`. Push again to
+publish an improved immutable version or update its description:
+
+```shell
+jeva push .jev-align/runs/<run-id> \
+  --description "Finds Hacker News posts about AI."
+```
+
+Before uploading, Jeva shows what will be public and asks you to confirm. A
+published artifact contains everything another person needs to run or continue
+improving the function:
+
+- The accepted definition and input signature.
+- The runtime backend and learning configuration.
+- Labeled inputs, labels, splits, and optional rationales.
+
+It does **not** contain unlabeled source rows, local dataset paths, API keys,
+reflection-provider credentials, or an unaccepted proposal. The registry is
+currently public, so do not publish labeled data you cannot share.
+Human review is encouraged for important tasks, but the registry does not claim
+or verify that every published annotation was created or reviewed by a person.
+
+Anyone can pull a public function without signing in:
+
+```shell
+jeva pull github-user/function-name
+jeva pull github-user/function-name --version 2
+```
+
+Pulling needs no login. It verifies the immutable artifact and creates a normal
+saved AI Function under `.jev-align/runs/`, ready to run or continue improving.
+
+Owners can remove a function from discovery and future public pulls:
+
+```shell
+jeva unpublish github-user/function-name
+```
+
+Unpublishing is reversible: versions and annotations are retained, and pushing
+the function again restores it. It cannot revoke copies that were already
+downloaded.
 
 ## Keep learning from production
 

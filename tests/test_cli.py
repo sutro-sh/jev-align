@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from jev_align.cli import (
     _acquisition_context,
@@ -33,8 +35,259 @@ from jev_align.session import RoundReport
 from typer.testing import CliRunner
 
 from jev_align import cli
+from jev_align import registry_auth
+from jev_align import registry_client
 
 SAMPLE_DATA = cli._packaged_example_directory()
+
+
+def test_login_command_shows_authenticated_github_user(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(
+        registry_auth,
+        "login_with_github",
+        lambda **_kwargs: (
+            registry_auth.RegistryCredential(
+                "https://ai-functions.dev",
+                "octocat",
+                "jeva_test",
+                "2027-01-01T00:00:00Z",
+            ),
+            "keyring",
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["login", "--no-browser"])
+
+    assert result.exit_code == 0
+    assert "Signed in as @octocat" in result.stdout
+
+
+def test_push_requires_public_confirmation_and_saves_publish_metadata(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text("{}", encoding="utf-8")
+    artifact = SimpleNamespace(
+        name="Aviation",
+        slug="aviation",
+        description="Finds aviation-related posts.",
+        task_type="binary",
+        backend=SimpleNamespace(provider="typesafe", model="jev"),
+        annotations=[SimpleNamespace(split="train", rationale="Human reason")],
+    )
+    monkeypatch.setattr(cli, "build_function_artifact", lambda *_args, **_kwargs: artifact)
+    monkeypatch.setattr(cli, "artifact_bytes", lambda _artifact: b"artifact")
+    monkeypatch.setattr(
+        registry_auth,
+        "authenticated_user",
+        lambda **_kwargs: {"login": "octocat"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        registry_client,
+        "publish_artifact",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or registry_client.PublishResult(
+            reference="octocat/aviation",
+            version=1,
+            digest="digest",
+            url="https://ai-functions.dev/octocat/aviation",
+            created=True,
+        ),
+    )
+
+    rejected = CliRunner().invoke(
+        cli.app,
+        ["push", str(run), "--name", "Aviation", "--yes"],
+    )
+    assert rejected.exit_code == 2
+    assert "requires --confirm-public-data" in rejected.stdout
+    assert calls == []
+
+    published = CliRunner().invoke(
+        cli.app,
+        [
+            "push",
+            str(run),
+            "--name",
+            "Aviation",
+            "--yes",
+            "--confirm-public-data",
+        ],
+    )
+    assert published.exit_code == 0
+    assert "Published octocat/aviation version 1" in published.stdout
+    assert len(calls) == 1
+    assert (run / "published.json").is_file()
+
+
+def test_interactive_push_logs_in_and_resumes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text("{}", encoding="utf-8")
+    artifact = SimpleNamespace(
+        name="Aviation",
+        slug="aviation",
+        description="Finds aviation posts.",
+        task_type="binary",
+        backend=SimpleNamespace(provider="typesafe", model="jev"),
+        annotations=[SimpleNamespace(split="train", rationale=None)],
+    )
+    monkeypatch.setattr(cli, "build_function_artifact", lambda *_args, **_kwargs: artifact)
+    monkeypatch.setattr(cli, "artifact_bytes", lambda _artifact: b"artifact")
+    authentication_attempts = []
+
+    def authenticated_user(**_kwargs):
+        authentication_attempts.append(True)
+        if len(authentication_attempts) == 1:
+            raise registry_auth.RegistryAuthError("Not signed in")
+        return {"login": "octocat"}
+
+    monkeypatch.setattr(registry_auth, "authenticated_user", authenticated_user)
+    logins = []
+    monkeypatch.setattr(
+        cli,
+        "login_command",
+        lambda **kwargs: logins.append(kwargs),
+    )
+    choices = iter(["l", "p"])
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: next(choices))
+    monkeypatch.setattr(
+        registry_client,
+        "publish_artifact",
+        lambda *_args, **_kwargs: registry_client.PublishResult(
+            reference="octocat/aviation",
+            version=1,
+            digest="digest",
+            url="https://ai-functions.dev/octocat/aviation",
+            created=True,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "push",
+            str(run),
+            "--name",
+            "Aviation",
+            "--description",
+            "Finds aviation posts.",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(authentication_attempts) == 2
+    assert logins == [{"registry": None, "no_browser": False}]
+    assert "Published octocat/aviation version 1" in result.stdout
+
+
+def test_unpublish_command_confirms_and_reports_success(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(
+        registry_auth,
+        "authenticated_user",
+        lambda **_kwargs: {"login": "octocat"},
+    )
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "u")
+    monkeypatch.setattr(
+        registry_client,
+        "unpublish_function",
+        lambda *_args, **_kwargs: registry_client.UnpublishResult(
+            reference="octocat/aviation",
+            changed=True,
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["unpublish", "octocat/aviation"])
+
+    assert result.exit_code == 0
+    assert "Unpublished octocat/aviation" in result.stdout
+
+
+def test_push_does_not_reuse_slug_from_another_registry(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text("{}", encoding="utf-8")
+    (run / "published.json").write_text(
+        json.dumps(
+            {
+                "registry": "http://127.0.0.1:5173",
+                "name": "AI related",
+                "slug": "ai-related",
+            }
+        ),
+        encoding="utf-8",
+    )
+    built = {}
+
+    def capture_build(_directory, *, name, slug, description):
+        built.update(name=name, slug=slug, description=description)
+        raise cli.ArtifactError("stop after resolving publication identity")
+
+    monkeypatch.setattr(cli, "build_function_artifact", capture_build)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "push",
+            str(run),
+            "--name",
+            "HN AI",
+            "--description",
+            "Classifies Hacker News posts about AI.",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert built == {
+        "name": "HN AI",
+        "slug": "hn-ai",
+        "description": "Classifies Hacker News posts about AI.",
+    }
+
+
+def test_pull_downloads_to_an_explicit_local_run(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    artifact = SimpleNamespace(
+        name="Aviation",
+        task_type="binary",
+        inputs=SimpleNamespace(mode="selected"),
+        annotations=[SimpleNamespace(rationale="Because runway")],
+    )
+    pulled = registry_client.PullResult(
+        reference="octocat/aviation",
+        version=2,
+        digest="verified",
+        artifact=artifact,  # type: ignore[arg-type]
+        registry="https://registry.example",
+    )
+    monkeypatch.setattr(registry_client, "pull_artifact", lambda *_args, **_kwargs: pulled)
+    materialized = {}
+
+    def materialize(value, target, **metadata):
+        materialized.update(value=value, target=target, **metadata)
+        return target.resolve()
+
+    monkeypatch.setattr(cli, "materialize_function_artifact", materialize)
+    output = tmp_path / "pulled"
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["pull", "octocat/aviation", "--version", "2", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert "octocat/aviation" in result.stdout
+    assert "Version" in result.stdout
+    assert materialized["target"] == output
+    assert materialized["digest"] == "verified"
 
 
 def _configure_test_jev_provider(monkeypatch) -> None:
@@ -999,6 +1252,28 @@ def test_function_cards_show_saved_run_details(tmp_path: Path) -> None:
     assert "100 rows · 5 labeled" in output
     assert "0.900 (training labels)" in output
     assert "80.0%" in output
+
+
+def test_functions_menu_can_start_registry_push(tmp_path: Path, monkeypatch) -> None:
+    saved = _saved_binary_function(tmp_path)
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(cli, "_load_saved_functions", lambda _root: [saved])
+    monkeypatch.setattr(cli, "_select_saved_function", lambda _saved: saved)
+    choices = []
+
+    def select_option(_prompt, options, **_kwargs):
+        choices.append(options)
+        return "p"
+
+    pushed = []
+    monkeypatch.setattr(cli, "_select_option", select_option)
+    monkeypatch.setattr(cli, "push_command", lambda run: pushed.append(run))
+
+    result = CliRunner().invoke(cli.app, ["functions"])
+
+    assert result.exit_code == 0
+    assert pushed == [saved.directory]
+    assert ("p", "Push to ai-functions.dev") in choices[0]
 
 
 def test_show_latest_optimized_includes_setup_signature_and_scoring(

@@ -7,6 +7,11 @@
 .jev-align/
 .pytest_cache/
 .venv/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+node_modules/
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 dist/

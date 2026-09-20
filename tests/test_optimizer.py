@@ -14,6 +14,7 @@ from jev_align.models import (
 from jev_align.optimizer import (
     ClassAwareBatchSampler,
     F1BatchEvaluator,
+    _optimizer_background,
     evaluate_labeled_candidate,
     optimize_candidate,
 )
@@ -41,6 +42,15 @@ def _candidate() -> dict[str, str]:
         "true_criteria": "It is about aviation.",
         "false_criteria": "It is not about aviation.",
     }
+
+
+def test_binary_optimizer_background_keeps_components_semantically_separate() -> None:
+    background = _optimizer_background(CandidateSpec.model_validate(_candidate()))
+
+    assert "instructions focused on the overall question" in background
+    assert "true_criteria must describe only when the answer is true" in background
+    assert "false_criteria must describe only when the answer is false" in background
+    assert "Never swap, merge, or contradict" in background
 
 
 def test_batch_evaluator_returns_global_f1_and_row_feedback() -> None:

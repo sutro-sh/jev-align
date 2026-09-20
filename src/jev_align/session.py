@@ -394,8 +394,12 @@ class ClimbSession:
         probability: float,
         resolved_model: str | None = None,
     ) -> LabelRecord:
+        story = self.story_by_id.get(story_id)
+        if story is None:
+            raise ValueError(f"unknown story ID: {story_id}")
         record = LabelRecord(
             story_id=story_id,
+            inputs=dict(story.fields),
             label=label,
             rationale=rationale.strip() if rationale and rationale.strip() else None,
             round_number=self.state.round_number,
