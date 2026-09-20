@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "gepa[full]>=0.1.4,<0.2",
+  "keyring>=25.7,<26",
   "packaging>=24,<27",
   "pyarrow>=25,<26",
   "pydantic>=2.10,<3",
@@ -52,6 +53,9 @@ Issues = "https://github.com/sutro-sh/jev-align/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jev_align"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/ai-functions.dev/**"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

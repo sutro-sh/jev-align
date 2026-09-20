@@ -65,6 +65,15 @@ from .models import (
 )
 from .metrics import nearest_score_level
 from .persistence import RunStore
+from . import registry_auth
+from . import registry_client
+from .artifacts import (
+    ArtifactError,
+    artifact_bytes,
+    build_function_artifact,
+    function_slug,
+    materialize_function_artifact,
+)
 from .session import ClimbSession, RoundReport, candidate_diff
 
 app = typer.Typer(no_args_is_help=False, pretty_exceptions_show_locals=False)
@@ -223,6 +232,404 @@ def main(ctx: typer.Context) -> None:
             functions_command()
         else:
             _new_run_wizard()
+
+
+@app.command("login")
+def login_command(
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="Print the GitHub URL without opening it"),
+    ] = False,
+) -> None:
+    """Sign in to the AI Function registry with GitHub."""
+
+    def show_device_code(verification_uri: str, user_code: str) -> None:
+        console.print(
+            Panel.fit(
+                Group(
+                    Text("Sign in with GitHub", style="bold"),
+                    Text.from_markup(
+                        f"Open [link={verification_uri}]{verification_uri}[/link]"
+                    ),
+                    Text.from_markup(f"Enter code: [bold cyan]{user_code}[/bold cyan]"),
+                    Text("Waiting for authorization…", style="dim"),
+                ),
+                border_style="cyan",
+            )
+        )
+
+    try:
+        credential, storage = registry_auth.login_with_github(
+            registry=registry,
+            open_browser=not no_browser,
+            on_device_code=show_device_code,
+        )
+    except registry_auth.RegistryAuthError as error:
+        console.print(f"[red]Login failed:[/red] {error}")
+        raise typer.Exit(1) from error
+    console.print(f"[green]✓[/green] Signed in as [bold]@{credential.login}[/bold]")
+    if storage == "file":
+        console.print(
+            "[yellow]No system keychain was available; the token was saved in a "
+            "permission-restricted Jeva configuration file.[/yellow]"
+        )
+
+
+@app.command("whoami")
+def whoami_command(
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+) -> None:
+    """Show the GitHub account authenticated with the registry."""
+    try:
+        user = registry_auth.authenticated_user(registry=registry)
+    except registry_auth.RegistryAuthError as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"Signed in as [bold]@{user['login']}[/bold]")
+
+
+@app.command("logout")
+def logout_command(
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+) -> None:
+    """Revoke the current registry token and remove it from this computer."""
+    if registry_auth.logout(registry=registry):
+        console.print("[green]✓[/green] Signed out")
+    else:
+        console.print("Already signed out")
+
+
+@app.command("push")
+def push_command(
+    run: Annotated[
+        Path | None,
+        typer.Argument(help="Saved run directory to publish"),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Public display name for this AI Function"),
+    ] = None,
+    slug: Annotated[
+        str | None,
+        typer.Option("--slug", help="Stable name used in username/function-name"),
+    ] = None,
+    description: Annotated[
+        str | None,
+        typer.Option(
+            "--description",
+            help="Short public description, up to 280 characters",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Publish without an interactive confirmation"),
+    ] = False,
+    confirm_public_data: Annotated[
+        bool,
+        typer.Option(
+            "--confirm-public-data",
+            help="Confirm that labeled inputs and rationales may be public",
+        ),
+    ] = False,
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+) -> None:
+    """Publish a saved AI Function and its human annotations."""
+    directory = run
+    default_name: str | None = None
+    if directory is None:
+        saved_functions = _load_saved_functions(Path.cwd())
+        if not saved_functions:
+            console.print("[red]No saved AI Functions found in .jev-align/runs.[/red]")
+            raise typer.Exit(1)
+        selected = _select_saved_function(saved_functions)
+        if selected is None:
+            raise typer.Exit()
+        directory = selected.directory
+        default_name = _function_name(selected)
+    directory = directory.expanduser().resolve()
+    if not (directory / "state.json").is_file():
+        console.print(f"[red]Not a saved AI Function run:[/red] {directory}")
+        raise typer.Exit(1)
+
+    published_path = directory / "published.json"
+    published: dict[str, object] = {}
+    if published_path.exists():
+        try:
+            value = json.loads(published_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                published = value
+        except (OSError, json.JSONDecodeError):
+            pass
+    current_registry = registry_auth.registry_url(registry)
+    if published.get("registry") != current_registry:
+        published = {}
+    existing_name = published.get("name")
+    if name is None:
+        suggested = (
+            existing_name
+            if isinstance(existing_name, str) and existing_name
+            else default_name or directory.name
+        )
+        if yes:
+            name = suggested
+        else:
+            name = console.input(f"Function name [bold][{suggested}][/bold]: ").strip()
+            name = name or suggested
+    existing_slug = published.get("slug")
+    if slug is None and isinstance(existing_slug, str) and existing_slug:
+        slug = existing_slug
+    existing_description = published.get("description")
+    saved_description = (
+        existing_description
+        if isinstance(existing_description, str) and existing_description
+        else None
+    )
+    if description is None:
+        if yes:
+            description = saved_description
+        else:
+            prompt = (
+                "Description (optional, Enter to keep current): "
+                if saved_description
+                else "Description (optional): "
+            )
+            entered = console.input(prompt).strip()
+            description = entered or saved_description
+    else:
+        description = description.strip() or None
+    try:
+        resolved_slug = slug or function_slug(name)
+        artifact = build_function_artifact(
+            directory,
+            name=name,
+            slug=resolved_slug,
+            description=description,
+        )
+    except (ArtifactError, ValueError) as error:
+        console.print(f"[red]Cannot publish:[/red] {error}")
+        raise typer.Exit(1) from error
+    try:
+        user = registry_auth.authenticated_user(registry=registry)
+    except registry_auth.RegistryAuthError as error:
+        if yes:
+            console.print(f"[red]Cannot publish:[/red] {error}")
+            raise typer.Exit(1) from error
+        choice = _select_option(
+            "Sign in with GitHub to publish this function?",
+            [("l", "Sign in with GitHub"), ("b", "Back")],
+        )
+        if choice != "l":
+            return
+        login_command(registry=registry, no_browser=False)
+        try:
+            user = registry_auth.authenticated_user(registry=registry)
+        except registry_auth.RegistryAuthError as retry_error:
+            console.print(f"[red]Cannot publish:[/red] {retry_error}")
+            raise typer.Exit(1) from retry_error
+
+    training = sum(item.split == "train" for item in artifact.annotations)
+    holdout = sum(item.split == "holdout" for item in artifact.annotations)
+    rationales = sum(bool(item.rationale) for item in artifact.annotations)
+    details = Table.grid(padding=(0, 2))
+    details.add_row("Function", f"[bold]{user['login']}/{artifact.slug}[/bold]")
+    if artifact.description:
+        details.add_row("Description", artifact.description)
+    details.add_row("Task", artifact.task_type)
+    details.add_row("Backend", f"{artifact.backend.provider} / {artifact.backend.model}")
+    details.add_row("Human annotations", f"{training} training, {holdout} held out")
+    details.add_row("Rationales", str(rationales))
+    console.print(
+        Panel(
+            Group(
+                details,
+                Text("Labeled inputs, labels, and rationales will be public.", style="yellow"),
+                Text("Unlabeled dataset rows and API credentials are not uploaded.", style="dim"),
+            ),
+            title="Publish AI Function",
+            border_style="cyan",
+        )
+    )
+    if yes and not confirm_public_data:
+        console.print(
+            "[red]--yes also requires --confirm-public-data because annotations are public.[/red]"
+        )
+        raise typer.Exit(2)
+    if not yes:
+        choice = _select_option(
+            "Publish this function publicly?",
+            [("p", "Publish"), ("b", "Back")],
+        )
+        if choice != "p":
+            return
+    try:
+        result = registry_client.publish_artifact(
+            artifact_bytes(artifact),
+            slug=artifact.slug,
+            registry=registry,
+        )
+    except registry_client.RegistryPublishError as error:
+        console.print(f"[red]Publish failed:[/red] {error}")
+        raise typer.Exit(1) from error
+    RunStore(directory).write_json(
+        "published.json",
+        {
+            "registry": current_registry,
+            "reference": result.reference,
+            "version": result.version,
+            "digest": result.digest,
+            "name": artifact.name,
+            "slug": artifact.slug,
+            "description": artifact.description,
+            "url": result.url,
+        },
+    )
+    status = "Published" if result.created else "Already published"
+    console.print(
+        f"[green]✓[/green] {status} [bold]{result.reference}[/bold] "
+        f"version {result.version}\n[link={result.url}]{result.url}[/link]"
+    )
+
+
+@app.command("unpublish")
+def unpublish_command(
+    reference: Annotated[
+        str,
+        typer.Argument(help="Function reference: GitHub-user/function-name"),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Unpublish without confirmation"),
+    ] = False,
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+) -> None:
+    """Hide a function you own from discovery and public pulls."""
+    try:
+        registry_auth.authenticated_user(registry=registry)
+    except registry_auth.RegistryAuthError as error:
+        if yes:
+            console.print(f"[red]Cannot unpublish:[/red] {error}")
+            raise typer.Exit(1) from error
+        choice = _select_option(
+            "Sign in with GitHub to unpublish this function?",
+            [("l", "Sign in with GitHub"), ("b", "Back")],
+        )
+        if choice != "l":
+            return
+        login_command(registry=registry, no_browser=False)
+
+    if not yes:
+        console.print(
+            Panel(
+                Group(
+                    Text.from_markup(f"Function: [bold]{reference}[/bold]"),
+                    Text("It will disappear from discovery and public pulls."),
+                    Text("Versions and annotations are retained. Re-push to restore it.", style="dim"),
+                ),
+                title="Unpublish AI Function",
+                border_style="yellow",
+            )
+        )
+        choice = _select_option(
+            "Unpublish this function?",
+            [("u", "Unpublish"), ("b", "Back")],
+        )
+        if choice != "u":
+            return
+    try:
+        result = registry_client.unpublish_function(reference, registry=registry)
+    except registry_client.RegistryUnpublishError as error:
+        console.print(f"[red]Unpublish failed:[/red] {error}")
+        raise typer.Exit(1) from error
+    status = "Unpublished" if result.changed else "Already unpublished"
+    console.print(f"[green]✓[/green] {status} [bold]{result.reference}[/bold]")
+
+
+@app.command("pull")
+def pull_command(
+    reference: Annotated[
+        str,
+        typer.Argument(help="Public function reference: GitHub-user/function-name"),
+    ],
+    version: Annotated[
+        int | None,
+        typer.Option("--version", min=1, help="Immutable version to download"),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Local run directory to create"),
+    ] = None,
+    registry: Annotated[
+        str | None,
+        typer.Option("--registry", envvar="JEVA_REGISTRY_URL", hidden=True),
+    ] = None,
+) -> None:
+    """Download a public AI Function into a normal local saved run."""
+    try:
+        pulled = registry_client.pull_artifact(
+            reference,
+            version=version,
+            registry=registry,
+        )
+        namespace, slug = pulled.reference.split("/", 1)
+        destination = output or (
+            Path.cwd()
+            / ".jev-align"
+            / "runs"
+            / f"pulled-{namespace}-{slug}-v{pulled.version}"
+        )
+        directory = materialize_function_artifact(
+            pulled.artifact,
+            destination,
+            reference=pulled.reference,
+            version=pulled.version,
+            digest=pulled.digest,
+            registry=pulled.registry,
+        )
+    except (registry_client.RegistryPullError, ArtifactError, ValueError) as error:
+        console.print(f"[red]Pull failed:[/red] {error}")
+        raise typer.Exit(1) from error
+
+    annotations = pulled.artifact.annotations
+    rationales = sum(bool(item.rationale) for item in annotations)
+    details = Table.grid(padding=(0, 2))
+    details.add_row("Function", f"[bold]{pulled.reference}[/bold]")
+    details.add_row("Version", str(pulled.version))
+    details.add_row("Task", pulled.artifact.task_type)
+    details.add_row("Human annotations", str(len(annotations)))
+    details.add_row("Rationales", str(rationales))
+    details.add_row("Saved to", str(directory))
+    console.print(
+        Panel(
+            details,
+            title="AI Function downloaded",
+            border_style="green",
+        )
+    )
+    if pulled.artifact.inputs.mode == "all_concatenated":
+        console.print(
+            "[yellow]This artifact predates portable source-column metadata. "
+            "Its exact concatenated input is available as the content field.[/yellow]"
+        )
+    console.print(
+        "Run it from [bold]jeva functions[/bold], or continue learning with:\n"
+        f"[cyan]jeva optimize --resume {directory}[/cyan]"
+    )
 
 
 def _installed_package() -> tuple[str, bool] | None:
@@ -2142,6 +2549,7 @@ def functions_command() -> None:
                 ("c", "Resume learning"),
                 ("s", "Show latest optimized"),
                 ("r", "Run on another dataset"),
+                ("p", "Push to ai-functions.dev"),
                 ("b", "Back to AI Functions"),
             ],
         )
@@ -2154,6 +2562,9 @@ def functions_command() -> None:
         elif action == "r":
             _run_saved_function(selected)
             _select_option("Run complete", [("b", "Back")])
+        elif action == "p":
+            push_command(selected.directory)
+            return
 
 
 @app.command("climb", hidden=True)

@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars for local authentication development.
+# Never commit .dev.vars.
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+TOKEN_PEPPER=

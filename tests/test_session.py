@@ -78,6 +78,11 @@ def test_mocked_round_persists_pending_diff_and_accepts(tmp_path, monkeypatch) -
             resolved_model=acquisition.prediction.resolved_model,
         )
 
+    saved_label = store.load_labels()[0]
+    assert saved_label.inputs == {
+        "title": f"Story {saved_label.story_id.removeprefix('row-')}"
+    }
+
     def fake_optimize_candidate(**kwargs):
         assert len(kwargs["examples"]) == 5
         assert all("rationale" in example for example in kwargs["examples"])

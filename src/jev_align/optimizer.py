@@ -329,6 +329,42 @@ def _display_label(label: bool | int | float | str | set[str]) -> str:
     return f"{label:g}"
 
 
+def _optimizer_background(seed_candidate: TaskSpec) -> str:
+    if isinstance(seed_candidate, MultilabelCandidateSpec):
+        task_context = (
+            "The candidate is a multilabel specification with independent binary "
+            "judgments. Rows may have zero, one, or multiple labels. Preserve all "
+            "label names and the independent, non-exclusive semantics. "
+        )
+    elif isinstance(seed_candidate, ScoreCandidateSpec):
+        task_context = (
+            "The candidate is a locked Score specification with one instructions "
+            "component and ordered level::<index> components. Preserve the number "
+            "and order of levels while improving their descriptions. "
+        )
+    elif isinstance(seed_candidate, MulticlassCandidateSpec):
+        task_context = (
+            "The candidate is a locked Choice specification with one instructions "
+            "component and one criterion::<class> component for every fixed class. "
+            "Preserve the class names and mutually exclusive task semantics. "
+        )
+    else:
+        task_context = (
+            "The candidate is a locked binary specification with exactly three text "
+            "components: instructions, true_criteria, and false_criteria. Preserve "
+            "the user's intended true/false semantics. Keep instructions focused on "
+            "the overall question and shared context; do not restate the label rules "
+            "there. true_criteria must describe only when the answer is true. "
+            "false_criteria must describe only when the answer is false. Never swap, "
+            "merge, or contradict the true and false meanings. "
+        )
+    return task_context + (
+        "Use human labels as authoritative and human rationales as boundary guidance. "
+        "Do not alter the state schema, labels, task type, or class set, and do not "
+        "memorize story-specific wording."
+    )
+
+
 def optimize_candidate(
     *,
     seed_candidate: TaskSpec,
@@ -419,36 +455,7 @@ def optimize_candidate(
                 )
             )
         ),
-        background=(
-            (
-                "The candidate is a multilabel specification with independent binary "
-                "judgments. Rows may have zero, one, or multiple labels. Preserve all "
-                "label names and the independent, non-exclusive semantics. "
-            )
-            if isinstance(seed_candidate, MultilabelCandidateSpec)
-            else (
-                "The candidate is a locked Score specification with one instructions "
-                "component and ordered level::<index> components. Preserve the number "
-                "and order of levels while improving their descriptions. "
-            )
-            if isinstance(seed_candidate, ScoreCandidateSpec)
-            else (
-                "The candidate is a locked Choice specification with one instructions "
-                "component and one criterion::<class> component for every fixed class. "
-                "Preserve the class names and mutually exclusive task semantics. "
-            )
-            if isinstance(seed_candidate, MulticlassCandidateSpec)
-            else (
-                "The candidate is a locked binary specification with exactly three text "
-                "components: instructions, true_criteria, and false_criteria. Preserve "
-                "the user's intended true/false semantics. "
-            )
-        )
-        + (
-            "Use human labels as authoritative and human rationales as boundary guidance. "
-            "Do not alter the state schema, labels, task type, or class set, and do not "
-            "memorize story-specific wording."
-        ),
+        background=_optimizer_background(seed_candidate),
         config=config,
     )
     result_path = output_dir / f"round-{round_number:04d}" / "gepa-result.json"

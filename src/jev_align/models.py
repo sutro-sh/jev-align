@@ -235,6 +235,7 @@ TaskCandidate = TaskSpec
 
 class LabelRecord(BaseModel):
     story_id: str
+    inputs: dict[str, str] | None = None
     label: bool | int | str | list[str]
     rationale: str | None = None
     round_number: int
