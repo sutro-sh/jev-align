@@ -332,6 +332,19 @@ class ClimbSession:
             self.state.current_candidate, "current", captured=captured
         )
 
+    def save_pending_pool_predictions(
+        self, candidate: TaskSpec, predictions: list[Prediction]
+    ) -> None:
+        self._save_pool_cache("pending", candidate, predictions)
+
+    def promote_pending_pool_predictions(self) -> None:
+        pending = self._pool_cache_path("pending")
+        if pending.exists():
+            os.replace(pending, self._pool_cache_path("current"))
+
+    def discard_pending_pool_predictions(self) -> None:
+        self._pool_cache_path("pending").unlink(missing_ok=True)
+
     def acquire(self) -> tuple[list[Any], list[Prediction]]:
         # Score the frozen original pool every round. Labeled rows are removed
         # only from acquisition eligibility, not from longitudinal diagnostics.

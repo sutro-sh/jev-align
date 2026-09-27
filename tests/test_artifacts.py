@@ -106,6 +106,15 @@ def test_pending_proposal_must_be_resolved_before_publish(tmp_path: Path) -> Non
         build_function_artifact(store.directory, name="Aviation classifier")
 
 
+def test_squash_run_cannot_be_published(tmp_path: Path) -> None:
+    store, state = _run(tmp_path)
+    state.optimization_mode = "squash"
+    store.save_state(state)
+
+    with pytest.raises(ArtifactError, match="squash runs cannot be published"):
+        build_function_artifact(store.directory, name="Aviation classifier")
+
+
 def test_materialized_artifact_is_a_normal_resumable_run(tmp_path: Path) -> None:
     source_store, _state = _run(tmp_path)
     artifact = build_function_artifact(source_store.directory, name="Aviation classifier")

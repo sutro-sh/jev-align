@@ -1,6 +1,9 @@
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from jev_align.cli import (
     _acquisition_context,
@@ -32,6 +35,7 @@ from jev_align.models import (
 )
 from jev_align.persistence import RunStore
 from jev_align.session import RoundReport
+from jev_align.squash import SquashPassReport, SquashRunReport
 from typer.testing import CliRunner
 
 from jev_align import cli
@@ -714,6 +718,617 @@ def test_optimize_replaces_climb_as_the_visible_command() -> None:
     assert "climb" not in help_result.output
     assert legacy_result.exit_code == 0
     assert "climb [OPTIONS]" in legacy_result.output
+    optimize_help = CliRunner().invoke(cli.app, ["optimize", "--help"])
+    assert "--squash" in optimize_help.output
+
+
+def test_optimize_squash_mode_saves_unlabeled_accepted_candidate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "rows.csv"
+    source.write_text("text\n" + "\n".join(f"row {index}" for index in range(5)))
+    run_directory = tmp_path / "squash-run"
+    final_candidate = CandidateSpec(
+        instructions="confident",
+        true_criteria="Always choose decisively.",
+        false_criteria="Never remain uncertain.",
+    )
+    predictions = [
+        Prediction(story_id=f"row-{index:06d}", probability=0.99)
+        for index in range(1, 6)
+    ]
+    summary_before = {
+        "count": 5,
+        "mean": 1.0,
+        "median": 1.0,
+        "at_least_0_5": 5,
+        "at_least_0_8": 5,
+    }
+    summary_after = {
+        "count": 5,
+        "mean": 0.02,
+        "median": 0.02,
+        "at_least_0_5": 0,
+        "at_least_0_8": 0,
+    }
+
+    class FakeBackend:
+        pass
+
+    squash_calls = []
+
+    def fake_run_squash(**kwargs):
+        squash_calls.append(kwargs)
+        return SquashRunReport(
+            seed_candidate=kwargs["seed_candidate"],
+            final_candidate=final_candidate,
+            initial_ambiguity=summary_before,
+            final_ambiguity=summary_after,
+            initial_true=0,
+            final_true=5,
+            final_prediction_flips=5,
+            total_metric_calls=20,
+            stop_reason="maximum passes reached",
+            passes=[],
+            final_predictions=predictions,
+        )
+
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(cli, "backend_credential_error", lambda *_args: None)
+    monkeypatch.setattr(cli, "create_backend", lambda *_args, **_kwargs: FakeBackend())
+    monkeypatch.setattr(cli, "validate_backend_for_task", lambda *_args: None)
+    monkeypatch.setattr(cli, "run_squash", fake_run_squash)
+    monkeypatch.setattr(cli, "_new_run_directory", lambda _question: run_directory)
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "q")
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "optimize",
+            str(source),
+            "--squash",
+            "--question",
+            "Is it relevant?",
+            "--reflection-model",
+            "openai/test",
+        ],
+    )
+
+    assert result.exit_code == 0
+    store = RunStore(run_directory)
+    state = store.load_state()
+    assert state.optimization_mode == "squash"
+    assert state.squash_min_improvement == 0.0
+    assert state.current_candidate != final_candidate
+    assert state.pending_candidate == final_candidate
+    assert store.load_labels() == []
+    assert "correctness was not measured" in result.output
+    assert "Stacked confidence progress · full-pool by squash pass" in result.output
+    assert "Start" in result.output
+    assert "Retained" in result.output
+    assert "98.0% certain" in result.output
+
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "a")
+    resumed = CliRunner().invoke(
+        cli.app,
+        ["optimize", "--resume", str(run_directory)],
+    )
+
+    assert resumed.exit_code == 0
+    state = store.load_state()
+    assert state.current_candidate == final_candidate
+    assert state.pending_candidate is None
+    assert state.history[-1].objective_score == 0.98
+    assert len(squash_calls) == 1
+    assert squash_calls[0]["progress"] is cli._show_squash_progress
+
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "b")
+    completed_resume = CliRunner().invoke(
+        cli.app,
+        ["optimize", "--resume", str(run_directory)],
+    )
+
+    assert completed_resume.exit_code == 0
+    assert "No new squash exploration started" in completed_resume.output
+    assert len(squash_calls) == 1
+
+
+def test_squash_round_skips_existing_attempt_artifacts(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "run")
+    candidate = CandidateSpec(
+        instructions="Classify the input.",
+        true_criteria="Matches.",
+        false_criteria="Does not match.",
+    )
+    state = RunState(
+        run_id="squash-rounds",
+        source_path=str(tmp_path / "data.csv"),
+        source_sha256="unused",
+        pool_size=1,
+        selected_columns=["text"],
+        reflection_model="openai/test",
+        current_candidate=candidate,
+        history=[CandidateHistory(round_number=0, candidate=candidate, decision="seed")],
+        optimization_mode="squash",
+    )
+    store.initialize(state)
+    (store.gepa_output_dir / "squash-0000").mkdir()
+    (store.directory / "squash-0001-report.json").write_text("{}")
+
+    cli._reserve_squash_round(state, store)
+
+    assert state.round_number == 2
+    assert store.load_state().round_number == 2
+
+
+def test_optimize_squash_mode_accepts_multiclass_and_reports_distribution(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "rows.csv"
+    source.write_text("text\n" + "\n".join(f"row {index}" for index in range(5)))
+    run_directory = tmp_path / "multiclass-squash-run"
+    final_candidate = MulticlassCandidateSpec(
+        instructions="Choose a transport class decisively.",
+        criteria={"air": "Aircraft.", "land": "Road or rail.", "sea": "Ships."},
+    )
+    summary_before = {
+        "count": 5,
+        "mean": 0.4,
+        "median": 0.4,
+        "at_least_0_5": 0,
+        "at_least_0_8": 0,
+    }
+    summary_after = {
+        "count": 5,
+        "mean": 0.05,
+        "median": 0.05,
+        "at_least_0_5": 0,
+        "at_least_0_8": 0,
+    }
+    predictions = [
+        Prediction(
+            story_id=f"row-{index:06d}",
+            probabilities={"air": 0.95, "land": 0.03, "sea": 0.02},
+            choice="air",
+            confidence=0.95,
+        )
+        for index in range(1, 6)
+    ]
+
+    def fake_run_squash(**kwargs):
+        return SquashRunReport(
+            seed_candidate=kwargs["seed_candidate"],
+            final_candidate=final_candidate,
+            initial_ambiguity=summary_before,
+            final_ambiguity=summary_after,
+            initial_true=0,
+            final_true=0,
+            final_prediction_flips=3,
+            total_metric_calls=20,
+            stop_reason="maximum search passes reached",
+            passes=[],
+            final_predictions=predictions,
+            initial_output_counts={"air": 2, "land": 2, "sea": 1},
+            final_output_counts={"air": 5, "land": 0, "sea": 0},
+        )
+
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(cli, "backend_credential_error", lambda *_args: None)
+    monkeypatch.setattr(cli, "create_backend", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(cli, "validate_backend_for_task", lambda *_args: None)
+    monkeypatch.setattr(cli, "run_squash", fake_run_squash)
+    monkeypatch.setattr(cli, "_new_run_directory", lambda _question: run_directory)
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "q")
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "optimize",
+            str(source),
+            "--squash",
+            "--question",
+            "Which transport domain is this?",
+            "--class",
+            "air=Aircraft.",
+            "--class",
+            "land=Road or rail.",
+            "--class",
+            "sea=Ships.",
+            "--reflection-model",
+            "openai/test",
+        ],
+    )
+
+    assert result.exit_code == 0
+    state = RunStore(run_directory).load_state()
+    assert state.optimization_mode == "squash"
+    assert isinstance(state.current_candidate, MulticlassCandidateSpec)
+    assert state.pending_candidate == final_candidate
+    assert "Predicted air" in result.output
+    assert "Predicted land" in result.output
+    assert "Predicted sea" in result.output
+
+
+@pytest.mark.parametrize(
+    ("task_args", "candidate_type"),
+    [
+        (
+            [
+                "--class",
+                "urgent=Needs immediate action.",
+                "--class",
+                "billing=Concerns billing.",
+                "--multilabel",
+            ],
+            MultilabelCandidateSpec,
+        ),
+        (
+            ["--score-level", "Minor", "--score-level", "Severe"],
+            ScoreCandidateSpec,
+        ),
+    ],
+)
+def test_optimize_squash_mode_accepts_multilabel_and_score(
+    task_args, candidate_type, monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "rows.csv"
+    source.write_text("text\n" + "\n".join(f"row {index}" for index in range(5)))
+    run_directory = tmp_path / "squash-run"
+
+    def fake_run_squash(**kwargs):
+        seed = kwargs["seed_candidate"]
+        final = seed.model_copy(
+            update={"instructions": f"{seed.instructions} Decide confidently."}
+        )
+        if isinstance(seed, MultilabelCandidateSpec):
+            predictions = [
+                Prediction(
+                    story_id=f"row-{index:06d}",
+                    label_probabilities={name: 0.99 for name in seed.labels},
+                )
+                for index in range(1, 6)
+            ]
+        else:
+            predictions = [
+                Prediction(
+                    story_id=f"row-{index:06d}",
+                    score=1.0,
+                    score_probabilities={0: 0.01, 1: 0.99},
+                    confidence=0.99,
+                )
+                for index in range(1, 6)
+            ]
+        before = {
+            "count": 5,
+            "mean": 0.5,
+            "median": 0.5,
+            "at_least_0_5": 5,
+            "at_least_0_8": 0,
+        }
+        after = {
+            "count": 5,
+            "mean": 0.01,
+            "median": 0.01,
+            "at_least_0_5": 0,
+            "at_least_0_8": 0,
+        }
+        return SquashRunReport(
+            seed_candidate=seed,
+            final_candidate=final,
+            initial_ambiguity=before,
+            final_ambiguity=after,
+            initial_true=0,
+            final_true=0,
+            final_prediction_flips=5,
+            total_metric_calls=20,
+            stop_reason="maximum search passes reached",
+            passes=[],
+            final_predictions=predictions,
+            initial_output_counts={"initial": 5},
+            final_output_counts={"final": 5},
+        )
+
+    monkeypatch.setattr(cli, "_maybe_offer_update", lambda: False)
+    monkeypatch.setattr(cli, "backend_credential_error", lambda *_args: None)
+    monkeypatch.setattr(cli, "create_backend", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(cli, "validate_backend_for_task", lambda *_args: None)
+    monkeypatch.setattr(cli, "run_squash", fake_run_squash)
+    monkeypatch.setattr(cli, "_new_run_directory", lambda _question: run_directory)
+    monkeypatch.setattr(cli, "_select_option", lambda *_args, **_kwargs: "q")
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "optimize",
+            str(source),
+            "--squash",
+            "--question",
+            "Classify this row",
+            "--reflection-model",
+            "openai/test",
+            *task_args,
+        ],
+    )
+
+    assert result.exit_code == 0
+    state = RunStore(run_directory).load_state()
+    assert state.optimization_mode == "squash"
+    assert isinstance(state.current_candidate, candidate_type)
+    assert isinstance(state.pending_candidate, candidate_type)
+
+
+def test_final_squash_confidence_view_stacks_every_pass() -> None:
+    initial = {
+        "count": 100,
+        "mean": 0.2,
+        "median": 0.1,
+        "at_least_0_5": 10,
+        "at_least_0_8": 3,
+    }
+    promoted = {
+        "count": 100,
+        "mean": 0.12,
+        "median": 0.06,
+        "at_least_0_5": 5,
+        "at_least_0_8": 1,
+    }
+    rejected = {
+        "count": 100,
+        "mean": 0.18,
+        "median": 0.09,
+        "at_least_0_5": 8,
+        "at_least_0_8": 2,
+    }
+    seed = CandidateSpec(
+        instructions="seed",
+        true_criteria="true",
+        false_criteria="false",
+    )
+    winner = seed.model_copy(update={"instructions": "winner"})
+    loser = seed.model_copy(update={"instructions": "loser"})
+    report = SquashRunReport(
+        seed_candidate=seed,
+        final_candidate=winner,
+        initial_ambiguity=initial,
+        final_ambiguity=promoted,
+        initial_true=20,
+        final_true=18,
+        final_prediction_flips=4,
+        total_metric_calls=100,
+        stop_reason="maximum search passes reached",
+        passes=[
+            SquashPassReport(
+                pass_number=1,
+                working_story_ids=["row-1"],
+                previous_candidate=seed,
+                proposed_candidate=winner,
+                previous_ambiguity=initial,
+                proposed_ambiguity=promoted,
+                metric_calls=50,
+                working_set_score=0.9,
+                prediction_flips=4,
+                true_before=20,
+                true_after=18,
+                promoted=True,
+                metric_budget=60,
+            ),
+            SquashPassReport(
+                pass_number=2,
+                working_story_ids=["row-2"],
+                previous_candidate=winner,
+                proposed_candidate=loser,
+                previous_ambiguity=promoted,
+                proposed_ambiguity=rejected,
+                metric_calls=50,
+                working_set_score=0.85,
+                prediction_flips=3,
+                true_before=18,
+                true_after=19,
+                promoted=False,
+                metric_budget=60,
+            ),
+        ],
+        final_predictions=[],
+    )
+
+    with console.capture() as capture:
+        console.print(cli._squash_pass_confidence_view(report))
+
+    output = capture.get()
+    assert "Stacked confidence progress · full-pool by squash pass" in output
+    assert "Start" in output
+    assert "Pass 1" in output
+    assert "Pass 2" in output
+    assert "Retained" in output
+    assert "80.0% certain" in output
+    assert "88.0% certain" in output
+    assert "82.0% certain" in output
+    assert "+8.000%" in output
+    assert "-6.000%" in output
+    assert "promoted" in output
+    assert "rejected" in output
+
+    with console.capture() as capture:
+        cli._show_squash_report(report)
+
+    final_output = capture.get()
+    assert "Squash passes" in final_output
+    assert "Stacked confidence progress · full-pool by squash pass" in final_output
+    assert "Start" in final_output
+    assert "Pass 1" in final_output
+    assert "Pass 2" in final_output
+    assert "Retained" in final_output
+    assert "[███████████████████░░░░░] 80.0% certain" in final_output
+    assert "[█████████████████████░░░] 88.0% certain" in final_output
+    assert "[████████████████████░░░░] 82.0% certain" in final_output
+    assert final_output.index("Squash passes") < final_output.index(
+        "Stacked confidence progress"
+    )
+
+
+def test_squash_progress_shows_working_and_full_pool_confidence() -> None:
+    before = {
+        "count": 100,
+        "mean": 0.2,
+        "median": 0.1,
+        "at_least_0_5": 12,
+        "at_least_0_8": 4,
+    }
+    after = {
+        "count": 100,
+        "mean": 0.12,
+        "median": 0.05,
+        "at_least_0_5": 5,
+        "at_least_0_8": 1,
+    }
+    candidate = CandidateSpec(
+        instructions="decide",
+        true_criteria="true",
+        false_criteria="false",
+    )
+    pass_report = SquashPassReport(
+        pass_number=1,
+        working_story_ids=["row-1", "row-2", "row-3"],
+        previous_candidate=candidate,
+        proposed_candidate=candidate.model_copy(update={"instructions": "decide now"}),
+        previous_ambiguity=before,
+        proposed_ambiguity=after,
+        metric_calls=120,
+        working_set_score=0.9,
+        prediction_flips=7,
+        true_before=40,
+        true_after=47,
+        promoted=True,
+    )
+
+    with console.capture() as capture:
+        cli._show_squash_progress(
+            "baseline",
+            {
+                "ambiguity": before,
+                "true_count": 40,
+                "total_count": 100,
+                "max_passes": 3,
+            },
+        )
+        cli._show_squash_progress(
+            "pass_start",
+            {
+                "pass_number": 1,
+                "max_passes": 3,
+                "uncertain_count": 2,
+                "certain_count": 1,
+                "working_ambiguity": {**before, "mean": 0.6, "count": 3},
+                "full_ambiguity": before,
+                "metric_budget": 100,
+            },
+        )
+        cli._show_squash_progress(
+            "gepa_complete",
+            {
+                "pass_number": 1,
+                "working_score_before": 0.4,
+                "working_score_after": 0.9,
+                "metric_calls": 120,
+                "full_pool_count": 100,
+            },
+        )
+        cli._show_squash_progress(
+            "full_pool_complete",
+            {
+                "pass_report": pass_report,
+                "improvement": 0.08,
+                "min_improvement": 0.001,
+                "stop_reason": "maximum passes reached",
+                "total_count": 100,
+            },
+        )
+
+    output = capture.get()
+    assert "Squash baseline · 100 frozen-pool rows" in output
+    assert "Confidence view · frozen-pool baseline" in output
+    assert "hard-mined 2 uncertain rows + 1 mixed rows" in output
+    assert "Confidence view · pass 1 starting point" in output
+    assert "Full pool" in output
+    assert "Mined set" in output
+    assert "GEPA working-set result: certainty 40.000% → 90.000% (+50.000%)" in output
+    assert "Confidence view · pass 1 P×N exploration" in output
+    assert "40.0% certain" in output
+    assert "90.0% certain" in output
+    assert "Pass 1 full-pool gate · PROMOTED" in output
+    assert "Confidence view · pass 1 full-pool validation" in output
+    assert "Incumbent" in output
+    assert "Candidate" in output
+    assert "80.000%" in output
+    assert "88.000%" in output
+    assert "80.0% certain" in output
+    assert "88.0% certain" in output
+    assert "Prediction flips" in output
+    assert "Promoted: mean uncertainty improved by 8.000%" in output
+
+
+def test_squash_progress_reports_small_gain_below_configured_minimum() -> None:
+    before = {
+        "count": 1000,
+        "mean": 0.12846,
+        "median": 0.06,
+        "at_least_0_5": 43,
+        "at_least_0_8": 15,
+    }
+    after = {
+        "count": 1000,
+        "mean": 0.12782,
+        "median": 0.08,
+        "at_least_0_5": 29,
+        "at_least_0_8": 7,
+    }
+    candidate = CandidateSpec(
+        instructions="seed",
+        true_criteria="true",
+        false_criteria="false",
+    )
+    report = SquashPassReport(
+        pass_number=1,
+        working_story_ids=["row-1"],
+        previous_candidate=candidate,
+        proposed_candidate=candidate.model_copy(update={"instructions": "proposed"}),
+        previous_ambiguity=before,
+        proposed_ambiguity=after,
+        metric_calls=600,
+        working_set_score=0.59,
+        prediction_flips=10,
+        true_before=22,
+        true_after=20,
+        promoted=False,
+    )
+
+    with console.capture() as capture:
+        cli._show_squash_progress(
+            "full_pool_complete",
+            {
+                "pass_report": report,
+                "improvement": 0.00064,
+                "min_improvement": 0.001,
+                "stop_reason": (
+                    "full-pool improvement below the configured minimum"
+                ),
+                "candidate_reason": (
+                    "full-pool improvement below the configured minimum"
+                ),
+                "continuing": True,
+                "uncertainty_eliminated": False,
+                "total_count": 1000,
+            },
+        )
+
+    output = capture.get()
+    assert "87.154%" in output
+    assert "87.218%" in output
+    assert "+0.064%" in output
+    assert "REJECTED · CONTINUING" in output
+    assert "improved by 0.064%, below the configured minimum of" in output
+    assert "0.100%" in output
+    assert "Trying another search pass" in output
 
 
 def test_update_prompt_upgrades_with_current_python_and_exits(monkeypatch) -> None:
@@ -883,17 +1498,42 @@ def test_wizard_advanced_settings_enable_larger_batches_and_holdout(
 
     result = CliRunner().invoke(
         cli.app,
-        input="n\n\na\nIs it aviation?\n\n\na\nb\ny\n450\nc\n",
+        input="n\n\na\nIs it aviation?\n\n\na\ng\nb\ny\n450\nc\n",
     )
 
     assert result.exit_code == 0
     assert captured["batch_size"] == 10
     assert captured["holdout"] is True
+    assert captured["squash_mode"] is False
     assert captured["metric_budget"] == 450
     assert (
         "10 training annotations per round + 2 held-out · max 450 GEPA metric calls"
         in result.output
     )
+
+
+def test_wizard_advanced_settings_can_enable_squash(monkeypatch) -> None:
+    _configure_test_jev_provider(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    captured = {}
+    monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cli, "_example_preset_for_path", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv"
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        input="n\n\na\nIs it aviation?\n\n\na\ns\n7\nc\n",
+    )
+
+    assert result.exit_code == 0
+    assert captured["squash_mode"] is True
+    assert captured["squash_max_passes"] == 7
+    assert captured["holdout"] is False
+    assert "Squash mode · no labels" in result.output
+    assert "7 search" in result.output
+    assert "P×N exploration with an automatic pool-sized" in result.output
 
 
 def test_wizard_row_default_uses_all_when_dataset_is_under_1000(
@@ -1252,6 +1892,58 @@ def test_function_cards_show_saved_run_details(tmp_path: Path) -> None:
     assert "100 rows · 5 labeled" in output
     assert "0.900 (training labels)" in output
     assert "80.0%" in output
+
+
+def test_squash_function_action_distinguishes_review_from_new_exploration(
+    tmp_path: Path,
+) -> None:
+    saved = _saved_binary_function(tmp_path)
+    saved.state.optimization_mode = "squash"
+
+    assert cli._function_continue_label(saved) == "Run another squash exploration"
+
+    saved.state.pending_candidate = saved.state.current_candidate
+
+    assert cli._function_continue_label(saved) == "Review pending squash result"
+
+
+def test_saved_functions_are_newest_first_regardless_of_run_name(
+    tmp_path: Path,
+) -> None:
+    candidate = CandidateSpec(
+        instructions="Sort me",
+        true_criteria="Yes.",
+        false_criteria="No.",
+    )
+
+    def create_run(run_id: str, modified_at: float) -> None:
+        directory = tmp_path / ".jev-align" / "runs" / run_id
+        store = RunStore(directory)
+        store.initialize(
+            RunState(
+                run_id=run_id,
+                source_path=str(tmp_path / "rows.csv"),
+                source_sha256="abc",
+                reflection_model="openai/test",
+                current_candidate=candidate,
+                history=[
+                    CandidateHistory(
+                        round_number=0, candidate=candidate, decision="seed"
+                    )
+                ],
+            )
+        )
+        os.utime(store.state_path, (modified_at, modified_at))
+
+    create_run("z-older-name", 100.0)
+    create_run("a-newer-name", 200.0)
+
+    loaded = cli._load_saved_functions(tmp_path)
+
+    assert [item.state.run_id for item in loaded] == [
+        "a-newer-name",
+        "z-older-name",
+    ]
 
 
 def test_functions_menu_can_start_registry_push(tmp_path: Path, monkeypatch) -> None:

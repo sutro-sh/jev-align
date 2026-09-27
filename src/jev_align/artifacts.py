@@ -212,6 +212,10 @@ def build_function_artifact(
 ) -> FunctionArtifact:
     store = RunStore(run_directory.resolve())
     state = store.load_state()
+    if state.optimization_mode == "squash":
+        raise ArtifactError(
+            "squash runs cannot be published because they contain no confirmed labels"
+        )
     if state.pending_candidate is not None:
         raise ArtifactError(
             "this run has a pending proposal; resume it and accept or reject the "

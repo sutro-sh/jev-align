@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Callable
@@ -39,6 +40,8 @@ class TypeSafeJevEvaluator:
     )
     model: str = "jev-1.13.0"
     concurrency: int = 16
+    transient_attempts: int = 4
+    transient_backoff_seconds: float = 0.5
 
     def evaluate_many(
         self, candidate: TaskSpec, stories: Sequence[Story]
@@ -76,7 +79,23 @@ class TypeSafeJevEvaluator:
         stories: Sequence[Story],
         on_complete: Callable[[], None] | None,
     ) -> list[Prediction]:
-        from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul, Score
+        from typesafe_sdk import (
+            AsyncTypeSafeClient,
+            Choice,
+            Noul,
+            Score,
+            TypeSafeAPIConnectionError,
+            TypeSafeAPITimeoutError,
+            TypeSafeInternalServerError,
+            TypeSafeRateLimitError,
+        )
+
+        transient_errors = (
+            TypeSafeAPIConnectionError,
+            TypeSafeAPITimeoutError,
+            TypeSafeInternalServerError,
+            TypeSafeRateLimitError,
+        )
 
         semaphore = asyncio.Semaphore(self.concurrency)
         if isinstance(candidate, MulticlassCandidateSpec):
@@ -121,10 +140,20 @@ class TypeSafeJevEvaluator:
         async with AsyncTypeSafeClient(model=self.model) as client:
 
             async def evaluate(story: Story) -> Prediction:
-                async with semaphore:
-                    result = await client.system_one(
-                        state=story.state(), questions=questions
-                    )
+                for attempt in range(self.transient_attempts):
+                    try:
+                        async with semaphore:
+                            result = await client.system_one(
+                                state=story.state(), questions=questions
+                            )
+                        break
+                    except transient_errors:
+                        if attempt + 1 >= self.transient_attempts:
+                            raise
+                        base_delay = self.transient_backoff_seconds * (2**attempt)
+                        await asyncio.sleep(
+                            base_delay + random.uniform(0.0, base_delay * 0.25)
+                        )
                 if isinstance(candidate, MulticlassCandidateSpec):
                     answer = result.answers["alignment"]
                     prediction = Prediction(

@@ -43,6 +43,40 @@ The guided workflow asks you to review every label. Labels may be human-created,
 synthetic, imported, or agent-assisted; review them to the standard your use
 case requires. A higher training score never accepts a proposal automatically.
 
+## Experimental squash mode
+
+Squash mode is an intentionally dangerous confidence-hacking demonstration. It
+uses no labels and repeatedly asks GEPA to rewrite a binary, multiclass,
+multilabel, or Score AI Function so Jev reports less uncertainty on the supplied dataset. Select it
+under **Advanced** in guided setup, or use `--squash` in a scripted run:
+
+```shell
+jeva optimize posts.csv --squash \
+  --question "Is the post related to aviation?" \
+  --column title \
+  --column text
+```
+
+For multiclass and multilabel tasks, repeat `--class "NAME=DESCRIPTION"` as
+usual; add `--multilabel` for independent labels. For Score tasks, repeat
+`--score-level "DESCRIPTION"` in lowest-to-highest order. Squash preserves the
+exact labels or ordered levels and displays their output distribution before and
+after exploration.
+
+Each pass hard-mines the most uncertain rows, mixes in a random sample of more
+certain rows, and runs two complete levels of 2×2 P×N exploration on that frozen
+working set. Squash calculates the required metric budget automatically from the
+working-set size; the guided setup does not ask for one. The winning proposal is
+then evaluated on the complete fixed pool and promoted only when mean full-pool
+uncertainty decreases. Rejected proposals do not stop the search: squash remixes
+the working set and runs another full exploration until it exhausts the configured
+search passes or eliminates full-pool uncertainty. The final definition still
+requires explicit acceptance.
+
+Squash measures confidence, not correctness. It can succeed by making every
+row confidently receive the same answer. Squash runs record no annotations and
+cannot be published to ai-functions.dev.
+
 ## Task types
 
 | Type | Output |
@@ -58,7 +92,8 @@ The guided **Advanced** menu configures:
 
 - 5, 10, 15, or 20 training annotations per round.
 - An optional 20% held-out evaluation set.
-- GEPA's metric-call budget, which defaults to 300.
+- GEPA's metric-call budget for guided labeling, which defaults to 300.
+- Squash mode's maximum search passes, which defaults to 5.
 
 By default, `jev-align` uses the first 1,000 rows—or the entire dataset when it
 is smaller—and lets you concatenate all fields or select specific columns.
