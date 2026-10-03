@@ -424,6 +424,7 @@ class CandidateHistory(BaseModel):
     decision: Literal["seed", "accepted", "rejected"]
     fit_f1: float | None = None
     holdout_score: float | None = None
+    objective_score: float | None = None
 
 
 class BackendConfig(BaseModel):
@@ -443,7 +444,7 @@ class BackendConfig(BaseModel):
 
 
 class RunState(BaseModel):
-    version: int = 3
+    version: int = 4
     run_id: str
     source_path: str
     source_sha256: str
@@ -460,6 +461,13 @@ class RunState(BaseModel):
     holdout_story_ids: list[str] = Field(default_factory=list)
     binary_true_label: str = "True"
     binary_false_label: str = "False"
+    optimization_mode: Literal["guided", "squash"] = "guided"
+    squash_uncertain_fraction: float = 0.1
+    squash_certain_mix_fraction: float = 0.2
+    squash_min_uncertain: int = 5
+    squash_max_uncertain: int = 50
+    squash_max_passes: int = 5
+    squash_min_improvement: float = 0.0
     round_number: int = 1
     current_candidate: TaskSpec
     history: list[CandidateHistory]
@@ -480,7 +488,8 @@ class RunState(BaseModel):
             }
         migrated.setdefault("holdout_fraction", 0.0)
         migrated.setdefault("holdout_story_ids", [])
-        migrated["version"] = 3
+        migrated.setdefault("optimization_mode", "guided")
+        migrated["version"] = 4
         return migrated
 
     @model_validator(mode="after")
@@ -495,6 +504,22 @@ class RunState(BaseModel):
             raise ValueError("holdout story IDs require a holdout fraction")
         if len(self.holdout_story_ids) != len(set(self.holdout_story_ids)):
             raise ValueError("holdout story IDs must be unique")
+        if not 0.0 < self.squash_uncertain_fraction <= 1.0:
+            raise ValueError("squash uncertain fraction must be in (0, 1]")
+        if not 0.0 <= self.squash_certain_mix_fraction <= 1.0:
+            raise ValueError("squash certain mix fraction must be in [0, 1]")
+        if (
+            self.squash_min_uncertain < 1
+            or self.squash_max_uncertain < self.squash_min_uncertain
+        ):
+            raise ValueError("invalid squash uncertain-row bounds")
+        if self.squash_max_passes < 1:
+            raise ValueError("squash maximum passes must be positive")
+        if not 0.0 <= self.squash_min_improvement <= 1.0:
+            raise ValueError("squash minimum improvement must be in [0, 1]")
+        if self.optimization_mode == "squash":
+            if self.holdout_fraction:
+                raise ValueError("squash mode cannot reserve a labeled holdout")
         return self
 
     @property

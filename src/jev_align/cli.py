@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -38,6 +38,7 @@ from .data import (
     source_sha256,
 )
 from .backends import (
+    EvaluationBackend,
     available_backend_providers,
     backend_credential_error,
     backend_display_name,
@@ -75,6 +76,7 @@ from .artifacts import (
     materialize_function_artifact,
 )
 from .session import ClimbSession, RoundReport, candidate_diff
+from .squash import SquashPassReport, SquashRunReport, run_squash
 
 app = typer.Typer(no_args_is_help=False, pretty_exceptions_show_locals=False)
 console = Console()
@@ -905,40 +907,83 @@ def _show_example_setup(preset: ExamplePreset) -> None:
 
 
 def _choose_advanced_settings(
-    batch_size: int, holdout: bool, metric_budget: int
-) -> tuple[int, bool, int]:
-    batch_key = _select_option(
-        "Training annotations per round",
-        [
-            ("a", "5 annotations (default)"),
-            ("b", "10 annotations"),
-            ("c", "15 annotations"),
-            ("d", "20 annotations"),
-        ],
-        initial_key={5: "a", 10: "b", 15: "c", 20: "d"}.get(batch_size, "a"),
-    )
-    selected_batch = {"a": 5, "b": 10, "c": 15, "d": 20}[batch_key]
-    holdout_choice = _select_option(
-        "Reserve 20% of rows as a held-out evaluation set?",
-        [
-            ("n", "No (default)"),
-            ("y", "Yes — add 20% extra held-out annotations each round"),
-        ],
-        initial_key="y" if holdout else "n",
-    )
-    while True:
-        raw_budget = _prompt_value(
-            "Maximum GEPA metric calls", default=str(metric_budget)
+    batch_size: int,
+    holdout: bool,
+    metric_budget: int,
+    squash: bool,
+    squash_max_passes: int,
+    *,
+    squash_available: bool,
+) -> tuple[int, bool, int, bool, int]:
+    mode_options = [("g", "Guided labeling (default)")]
+    if squash_available:
+        mode_options.append(
+            ("s", "Squash uncertainty without labels (dangerous experiment)")
         )
-        try:
-            selected_budget = int(raw_budget)
-        except ValueError:
+    mode = _select_option(
+        "Learning mode",
+        mode_options,
+        initial_key="s" if squash and squash_available else "g",
+    )
+    selected_squash = mode == "s"
+    selected_batch = batch_size
+    selected_holdout = False
+    if not selected_squash:
+        batch_key = _select_option(
+            "Training annotations per round",
+            [
+                ("a", "5 annotations (default)"),
+                ("b", "10 annotations"),
+                ("c", "15 annotations"),
+                ("d", "20 annotations"),
+            ],
+            initial_key={5: "a", 10: "b", 15: "c", 20: "d"}.get(batch_size, "a"),
+        )
+        selected_batch = {"a": 5, "b": 10, "c": 15, "d": 20}[batch_key]
+        holdout_choice = _select_option(
+            "Reserve 20% of rows as a held-out evaluation set?",
+            [
+                ("n", "No (default)"),
+                ("y", "Yes — add 20% extra held-out annotations each round"),
+            ],
+            initial_key="y" if holdout else "n",
+        )
+        selected_holdout = holdout_choice == "y"
+    selected_budget = metric_budget
+    if not selected_squash:
+        while True:
+            raw_budget = _prompt_value(
+                "Maximum GEPA metric calls", default=str(metric_budget)
+            )
+            try:
+                selected_budget = int(raw_budget)
+            except ValueError:
+                console.print("Enter a positive whole number.", style="red")
+                continue
+            if selected_budget > 0:
+                break
             console.print("Enter a positive whole number.", style="red")
-            continue
-        if selected_budget > 0:
-            break
-        console.print("Enter a positive whole number.", style="red")
-    return selected_batch, holdout_choice == "y", selected_budget
+    selected_squash_max_passes = squash_max_passes
+    if selected_squash:
+        while True:
+            raw_passes = _prompt_value(
+                "Maximum squash search passes", default=str(squash_max_passes)
+            )
+            try:
+                selected_squash_max_passes = int(raw_passes)
+            except ValueError:
+                console.print("Enter a positive whole number.", style="red")
+                continue
+            if selected_squash_max_passes > 0:
+                break
+            console.print("Enter a positive whole number.", style="red")
+    return (
+        selected_batch,
+        selected_holdout,
+        selected_budget,
+        selected_squash,
+        selected_squash_max_passes,
+    )
 
 
 def _holdout_story_ids(
@@ -1068,6 +1113,8 @@ def _new_run_wizard() -> None:
     batch_size = 5
     holdout = False
     metric_budget = 300
+    squash_mode = False
+    squash_max_passes = 5
     while True:
         action = _select_option(
             "Create this AI Function",
@@ -1075,16 +1122,34 @@ def _new_run_wizard() -> None:
         )
         if action == "c":
             break
-        batch_size, holdout, metric_budget = _choose_advanced_settings(
-            batch_size, holdout, metric_budget
+        (
+            batch_size,
+            holdout,
+            metric_budget,
+            squash_mode,
+            squash_max_passes,
+        ) = _choose_advanced_settings(
+            batch_size,
+            holdout,
+            metric_budget,
+            squash_mode,
+            squash_max_passes,
+            squash_available=True,
         )
-        extra = round(batch_size * 0.2) if holdout else 0
-        console.print(
-            f"[dim]{batch_size} training annotations per round"
-            + (f" + {extra} held-out" if holdout else " · no held-out set")
-            + f" · max {metric_budget} GEPA metric calls"
-            + "[/dim]"
-        )
+        if squash_mode:
+            console.print(
+                "[red]Squash mode · no labels · confidence is optimized without "
+                f"correctness · {squash_max_passes} search passes · 2-level 2×2 "
+                "P×N exploration with an automatic pool-sized budget/pass[/red]"
+            )
+        else:
+            extra = round(batch_size * 0.2) if holdout else 0
+            console.print(
+                f"[dim]{batch_size} training annotations per round"
+                + (f" + {extra} held-out" if holdout else " · no held-out set")
+                + f" · max {metric_budget} GEPA metric calls"
+                + "[/dim]"
+            )
     optimize(
         data=data,
         question=question,
@@ -1103,6 +1168,8 @@ def _new_run_wizard() -> None:
         true_label=true_label,
         false_label=false_label,
         backend_name=backend_name,
+        squash_mode=squash_mode,
+        squash_max_passes=squash_max_passes,
     )
 
 
@@ -1507,7 +1574,27 @@ def _load_saved_functions(root: Path) -> list[SavedFunction]:
                 certainty=certainty,
             )
         )
-    return sorted(saved, key=lambda item: item.state.run_id, reverse=True)
+    return sorted(
+        saved,
+        key=lambda item: (_saved_function_created_at(item), item.state.run_id),
+        reverse=True,
+    )
+
+
+def _saved_function_created_at(saved: SavedFunction) -> float:
+    """Return stable creation time for generated runs, with a filesystem fallback."""
+    match = re.match(r"^(\d{8}-\d{6}-\d{6})(?:-|$)", saved.state.run_id)
+    if match is not None:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S-%f").replace(
+                tzinfo=timezone.utc
+            ).timestamp()
+        except ValueError:
+            pass
+    try:
+        return (saved.directory / "state.json").stat().st_mtime
+    except OSError:
+        return saved.directory.stat().st_mtime
 
 
 def _latest_fit(saved: SavedFunction) -> float | None:
@@ -1534,6 +1621,14 @@ def _function_name(saved: SavedFunction) -> str:
         saved.state.current_candidate,
     )
     return _compact_option_label(seed.instructions, max_chars=88)
+
+
+def _function_continue_label(saved: SavedFunction) -> str:
+    if saved.state.optimization_mode != "squash":
+        return "Resume learning"
+    if saved.state.pending_candidate is not None:
+        return "Review pending squash result"
+    return "Run another squash exploration"
 
 
 def _function_card(saved: SavedFunction, *, selected: bool = False) -> Panel:
@@ -2093,6 +2188,51 @@ def _show_current_uncertainty(predictions: list[Prediction]) -> None:
     console.print(table)
 
 
+def _squash_confidence_view(
+    title: str,
+    rows: list[tuple[str, float]],
+) -> Table:
+    table = Table.grid(padding=(0, 2))
+    table.title = f"Confidence view · {title}"
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column()
+    for label, certainty in rows:
+        table.add_row(label, _certainty_bar(certainty))
+    return table
+
+
+def _squash_pass_confidence_view(report: SquashRunReport) -> Table:
+    table = Table.grid(padding=(0, 2))
+    table.title = "Stacked confidence progress · full-pool by squash pass"
+    table.add_column(no_wrap=True)
+    table.add_column()
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(no_wrap=True)
+    initial_certainty = 1.0 - float(report.initial_ambiguity["mean"])
+    table.add_row("Start", _certainty_bar(initial_certainty), "—", "incumbent")
+    for item in report.passes:
+        before = 1.0 - float(item.previous_ambiguity["mean"])
+        proposed = 1.0 - float(item.proposed_ambiguity["mean"])
+        result = Text(
+            "promoted" if item.promoted else "rejected",
+            style="green" if item.promoted else "yellow",
+        )
+        table.add_row(
+            f"Pass {item.pass_number}",
+            _certainty_bar(proposed),
+            _certainty_change(before, proposed),
+            result,
+        )
+    retained_certainty = 1.0 - float(report.final_ambiguity["mean"])
+    table.add_row(
+        "Retained",
+        _certainty_bar(retained_certainty),
+        _certainty_change(initial_certainty, retained_certainty),
+        "final incumbent",
+    )
+    return table
+
+
 def _show_certainty_history(session: ClimbSession, report: RoundReport) -> None:
     reports: dict[int, RoundReport] = {}
     legacy_rounds: list[int] = []
@@ -2272,6 +2412,428 @@ def _decision_gate(session: ClimbSession, report: RoundReport) -> bool:
         return True
     console.print("Run saved with this decision pending.")
     return False
+
+
+def _show_squash_report(report: SquashRunReport) -> None:
+    summary = Table(title="Squash result · full frozen pool")
+    summary.add_column("Measure")
+    summary.add_column("Before", justify="right")
+    summary.add_column("After", justify="right")
+    summary.add_column("Change", justify="right")
+    for key in ("mean", "median", "at_least_0_5", "at_least_0_8"):
+        summary.add_row(
+            key,
+            _squash_ambiguity_value(key, report.initial_ambiguity[key]),
+            _squash_ambiguity_value(key, report.final_ambiguity[key]),
+            _squash_ambiguity_change(
+                key, report.initial_ambiguity[key], report.final_ambiguity[key]
+            ),
+        )
+    initial_counts, final_counts = _squash_report_output_counts(report)
+    for output in sorted(initial_counts.keys() | final_counts.keys()):
+        before = initial_counts.get(output, 0)
+        after = final_counts.get(output, 0)
+        summary.add_row(
+            f"Predicted {output}", str(before), str(after), f"{after - before:+d}"
+        )
+    summary.add_row("Prediction flips", "—", str(report.final_prediction_flips), "—")
+    console.print(summary)
+
+    passes = Table(title="Squash passes")
+    passes.add_column("Pass", justify="right")
+    passes.add_column("Working rows", justify="right")
+    passes.add_column("GEPA calls", justify="right")
+    passes.add_column("Full-pool uncertainty", justify="right")
+    passes.add_column("Flips", justify="right")
+    passes.add_column("Result")
+    for item in report.passes:
+        passes.add_row(
+            str(item.pass_number),
+            str(len(item.working_story_ids)),
+            (
+                f"{item.metric_calls:,}/{item.metric_budget:,}"
+                if item.metric_budget is not None
+                else f"{item.metric_calls:,}"
+            ),
+            (
+                f"{float(item.previous_ambiguity['mean']):.3%} → "
+                f"{float(item.proposed_ambiguity['mean']):.3%}"
+            ),
+            str(item.prediction_flips),
+            "promoted" if item.promoted else "rejected",
+        )
+    console.print(passes)
+    console.print(_squash_pass_confidence_view(report))
+    console.print(
+        Panel(
+            "No labels were used and correctness was not measured. This candidate "
+            "was optimized only to make Jev report higher confidence. A collapse to "
+            "one output pattern is a successful confidence hack, not evidence of quality.",
+            title="DANGER · CONFIDENCE HACKING",
+            border_style="red",
+        )
+    )
+    console.print(
+        f"[dim]{report.total_metric_calls} GEPA metric calls · stopped because "
+        f"{report.stop_reason}[/dim]"
+    )
+    diff = candidate_diff(report.seed_candidate, report.final_candidate)
+    console.print(Panel(diff or "No textual change.", title="AI Function diff"))
+
+
+def _certainty_change(before: float, after: float) -> Text:
+    change = after - before
+    return Text(
+        f"{change:+.3%}",
+        style="green" if change > 0 else "yellow" if change < 0 else "dim",
+    )
+
+
+def _squash_report_output_counts(
+    report: SquashRunReport,
+) -> tuple[dict[str, int], dict[str, int]]:
+    total = int(report.initial_ambiguity["count"])
+    if report.initial_output_counts is not None:
+        initial = report.initial_output_counts
+    else:
+        initial = {"False": total - report.initial_true, "True": report.initial_true}
+    if report.final_output_counts is not None:
+        final = report.final_output_counts
+    else:
+        final = {"False": total - report.final_true, "True": report.final_true}
+    return initial, final
+
+
+def _squash_pass_output_counts(
+    item: SquashPassReport, total: int
+) -> tuple[dict[str, int], dict[str, int]]:
+    before = item.previous_output_counts or {
+        "False": total - item.true_before,
+        "True": item.true_before,
+    }
+    after = item.proposed_output_counts or {
+        "False": total - item.true_after,
+        "True": item.true_after,
+    }
+    return before, after
+
+
+def _squash_ambiguity_value(key: str, value: float | int) -> str:
+    return f"{float(value):.3%}" if key in {"mean", "median"} else f"{int(value):,}"
+
+
+def _squash_ambiguity_change(
+    key: str, current: float | int, proposed: float | int
+) -> Text:
+    change = float(proposed) - float(current)
+    label = f"{change:+.3%}" if key in {"mean", "median"} else f"{int(change):+d}"
+    return Text(label, style="green" if change < 0 else "yellow" if change > 0 else "dim")
+
+
+def _show_squash_progress(event: str, details: dict[str, Any]) -> None:
+    if event == "baseline":
+        summary = details["ambiguity"]
+        total = int(details["total_count"])
+        true_count = int(details["true_count"])
+        output_counts = details.get("output_counts") or {
+            "False": total - true_count,
+            "True": true_count,
+        }
+        table = Table(title=f"Squash baseline · {total:,} frozen-pool rows")
+        table.add_column("Certainty", justify="right")
+        table.add_column("Mean uncertainty", justify="right")
+        table.add_column("Median uncertainty", justify="right")
+        table.add_column("≥50% uncertain", justify="right")
+        table.add_column("≥80% uncertain", justify="right")
+        table.add_column("Output distribution", justify="right")
+        table.add_row(
+            f"{1.0 - float(summary['mean']):.3%}",
+            f"{float(summary['mean']):.3%}",
+            f"{float(summary['median']):.3%}",
+            f"{int(summary['at_least_0_5']):,}",
+            f"{int(summary['at_least_0_8']):,}",
+            " · ".join(
+                f"{name}: {int(count):,} ({int(count) / total:.1%})"
+                for name, count in sorted(output_counts.items())
+            )
+            if total
+            else "0",
+        )
+        console.print(table)
+        console.print(
+            _squash_confidence_view(
+                "frozen-pool baseline",
+                [("Full pool", 1.0 - float(summary["mean"]))],
+            )
+        )
+        return
+
+    if event == "pass_start":
+        pass_number = int(details["pass_number"])
+        max_passes = int(details["max_passes"])
+        hard = int(details["uncertain_count"])
+        mixed = int(details["certain_count"])
+        working = details["working_ambiguity"]
+        full = details["full_ambiguity"]
+        console.print(
+            f"\n[bold]Squash pass {pass_number}/{max_passes}[/bold] · "
+            f"hard-mined {hard:,} uncertain rows + {mixed:,} mixed rows"
+        )
+        console.print(
+            f"Working-set certainty [bold]{1.0 - float(working['mean']):.3%}[/bold] "
+            f"· full-pool certainty {1.0 - float(full['mean']):.3%} · "
+            f"automatic 2-level P×N budget "
+            f"{int(details['metric_budget']):,} metric calls"
+        )
+        console.print(
+            _squash_confidence_view(
+                f"pass {pass_number} starting point",
+                [
+                    ("Full pool", 1.0 - float(full["mean"])),
+                    ("Mined set", 1.0 - float(working["mean"])),
+                ],
+            )
+        )
+        return
+
+    if event == "gepa_complete":
+        before = float(details["working_score_before"])
+        after = float(details["working_score_after"])
+        calls = int(details["metric_calls"])
+        console.print(
+            f"GEPA working-set result: certainty {before:.3%} → {after:.3%} "
+            f"({after - before:+.3%}) · {calls:,} metric calls"
+        )
+        console.print(
+            _squash_confidence_view(
+                f"pass {int(details['pass_number'])} P×N exploration",
+                [("Before", before), ("GEPA winner", after)],
+            )
+        )
+        console.print(
+            f"Validating the candidate against all "
+            f"{int(details['full_pool_count']):,} frozen-pool rows…"
+        )
+        return
+
+    if event != "full_pool_complete":
+        return
+
+    item: SquashPassReport = details["pass_report"]
+    before = item.previous_ambiguity
+    after = item.proposed_ambiguity
+    total = int(details["total_count"])
+    before_certainty = 1.0 - float(before["mean"])
+    after_certainty = 1.0 - float(after["mean"])
+    continuing = bool(details.get("continuing", False))
+    uncertainty_eliminated = bool(details.get("uncertainty_eliminated", False))
+    if item.promoted:
+        status = "PROMOTED"
+    elif continuing:
+        status = "REJECTED · CONTINUING"
+    else:
+        status = "REJECTED"
+    table = Table(title=f"Pass {item.pass_number} full-pool gate · {status}")
+    table.add_column("Measure")
+    table.add_column("Before", justify="right")
+    table.add_column("Candidate", justify="right")
+    table.add_column("Change", justify="right")
+    table.add_row(
+        "Certainty",
+        f"{before_certainty:.3%}",
+        f"{after_certainty:.3%}",
+        _certainty_change(before_certainty, after_certainty),
+    )
+    for key, label in (
+        ("mean", "Mean uncertainty"),
+        ("median", "Median uncertainty"),
+        ("at_least_0_5", "≥50% uncertain"),
+        ("at_least_0_8", "≥80% uncertain"),
+    ):
+        table.add_row(
+            label,
+            _squash_ambiguity_value(key, before[key]),
+            _squash_ambiguity_value(key, after[key]),
+            _squash_ambiguity_change(key, before[key], after[key]),
+        )
+    before_counts, after_counts = _squash_pass_output_counts(item, total)
+    for output in sorted(before_counts.keys() | after_counts.keys()):
+        before_count = before_counts.get(output, 0)
+        after_count = after_counts.get(output, 0)
+        table.add_row(
+            f"Predicted {output}",
+            f"{before_count:,} ({before_count / total:.1%})" if total else "0",
+            f"{after_count:,} ({after_count / total:.1%})" if total else "0",
+            f"{after_count - before_count:+d}",
+        )
+    table.add_row("Prediction flips", "—", f"{item.prediction_flips:,}", "—")
+    console.print(table)
+    console.print(
+        _squash_confidence_view(
+            f"pass {item.pass_number} full-pool validation",
+            [("Incumbent", before_certainty), ("Candidate", after_certainty)],
+        )
+    )
+    if item.promoted:
+        if uncertainty_eliminated:
+            console.print(
+                "[bold green]Full-pool uncertainty eliminated.[/bold green]"
+            )
+        else:
+            next_step = (
+                "continuing from this candidate"
+                if continuing
+                else "retaining this candidate"
+            )
+            console.print(
+                f"[green]Promoted:[/green] mean uncertainty improved by "
+                f"{float(details['improvement']):.3%}; {next_step}."
+            )
+    elif float(details["improvement"]) > 0.0:
+        console.print(
+            f"[yellow]Rejected:[/yellow] mean uncertainty improved by "
+            f"{float(details['improvement']):.3%}, below the configured minimum "
+            f"of {float(details['min_improvement']):.3%}."
+        )
+    else:
+        console.print(
+            f"[yellow]Rejected:[/yellow] {details['candidate_reason']}."
+        )
+    if continuing and not item.promoted:
+        console.print(
+            "[bold]Trying another search pass with a newly mixed working set…[/bold]"
+        )
+    elif not continuing and not uncertainty_eliminated:
+        console.print("[dim]Configured squash search passes exhausted.[/dim]")
+
+
+def _squash_decision_gate(session: ClimbSession, report: SquashRunReport) -> bool:
+    _show_squash_report(report)
+    value = _select_option(
+        "Dangerous squash decision",
+        [("a", "Accept"), ("r", "Reject"), ("q", "Quit")],
+        option_styles=["green", "red", "dim"],
+    )
+    if value == "q":
+        console.print("Run saved with this decision pending.")
+        return False
+
+    state = session.state
+    if state.pending_candidate is None:
+        raise ValueError("there is no pending squash candidate")
+    decision = "accepted" if value == "a" else "rejected"
+    state.history.append(
+        CandidateHistory(
+            round_number=state.round_number,
+            candidate=state.pending_candidate,
+            decision=decision,
+            objective_score=1.0 - float(report.final_ambiguity["mean"]),
+        )
+    )
+    if value == "a":
+        state.current_candidate = state.pending_candidate
+        session.promote_pending_pool_predictions()
+    else:
+        session.discard_pending_pool_predictions()
+    state.pending_candidate = None
+    state.pending_report = None
+    state.round_number += 1
+    session.store.save_state(state)
+    return True
+
+
+def _reserve_squash_round(state: RunState, store: RunStore) -> None:
+    initial_round = state.round_number
+    while any(
+        path.exists()
+        for path in (
+            store.gepa_output_dir / f"squash-{state.round_number:04d}",
+            store.gepa_run_dir / f"squash-{state.round_number:04d}",
+            store.directory / f"squash-{state.round_number:04d}-report.json",
+        )
+    ):
+        state.round_number += 1
+    if state.round_number != initial_round:
+        store.save_state(state)
+
+
+def _run_squash_mode(
+    session: ClimbSession,
+    stories: list[Story],
+    backend: EvaluationBackend,
+) -> None:
+    state = session.state
+    store = session.store
+    if state.pending_candidate is not None and state.pending_report is not None:
+        if state.pending_report.get("kind") != "squash":
+            raise typer.BadParameter("saved pending proposal is not a squash result")
+        _squash_decision_gate(session, SquashRunReport.from_dict(state.pending_report))
+        return
+
+    _reserve_squash_round(state, store)
+
+    console.print(
+        Panel(
+            "This mode intentionally optimizes reported confidence without labels. "
+            "It can make every prediction confidently wrong and is unsafe as evidence "
+            "of production quality.",
+            title="Experimental confidence hacking",
+            border_style="red",
+        )
+    )
+
+    def evaluate_full(candidate: TaskSpec, pass_number: int) -> list[Prediction]:
+        if pass_number == 0 and candidate == state.current_candidate:
+            return session.current_pool_predictions()
+        return evaluate_with_progress(
+            backend,
+            candidate,
+            stories,
+            f"{backend_display_name(backend)} · squash pass {pass_number} full pool",
+        )
+
+    try:
+        report = run_squash(
+            seed_candidate=state.current_candidate,
+            stories=stories,
+            backend=backend,
+            reflection_model=state.reflection_model,
+            max_passes=state.squash_max_passes,
+            uncertain_fraction=state.squash_uncertain_fraction,
+            certain_mix_fraction=state.squash_certain_mix_fraction,
+            min_uncertain=state.squash_min_uncertain,
+            max_uncertain=state.squash_max_uncertain,
+            min_improvement=state.squash_min_improvement,
+            output_dir=store.gepa_output_dir / f"squash-{state.round_number:04d}",
+            run_dir=store.gepa_run_dir / f"squash-{state.round_number:04d}",
+            concurrency=state.concurrency,
+            seed=state.seed,
+            evaluate_full=evaluate_full,
+            report_path=(
+                store.directory / f"squash-{state.round_number:04d}-report.json"
+            ),
+            progress=_show_squash_progress,
+        )
+    except KeyboardInterrupt:
+        store.save_state(state)
+        console.print(
+            "\nRun saved. Resume it with "
+            f"jeva optimize --resume {store.directory}"
+        )
+        raise typer.Exit(130)
+
+    if report.final_candidate == state.current_candidate:
+        _show_squash_report(report)
+        console.print("No full-pool-improving candidate was produced.")
+        return
+
+    state.pending_candidate = report.final_candidate
+    state.pending_report = report.as_dict()
+    session.save_pending_pool_predictions(
+        report.final_candidate, report.final_predictions
+    )
+    store.save_state(state)
+    _squash_decision_gate(session, report)
 
 
 def _signature(candidate: TaskSpec, state: RunState) -> str:
@@ -2548,7 +3110,7 @@ def functions_command() -> None:
         action = _select_option(
             _function_name(selected),
             [
-                ("c", "Resume learning"),
+                ("c", _function_continue_label(selected)),
                 ("s", "Show latest optimized"),
                 ("r", "Run on another dataset"),
                 ("p", "Push to ai-functions.dev"),
@@ -2669,13 +3231,55 @@ def optimize(
             ),
         ),
     ] = False,
+    squash_mode: Annotated[
+        bool,
+        typer.Option(
+            "--squash",
+            help=(
+                "Dangerously optimize Jev confidence without collecting labels; "
+                "available for every task type"
+            ),
+        ),
+    ] = False,
+    squash_uncertain_fraction: Annotated[
+        float,
+        typer.Option("--squash-uncertain-fraction", min=0.01, max=1.0),
+    ] = 0.1,
+    squash_certain_mix_fraction: Annotated[
+        float,
+        typer.Option("--squash-certain-mix-fraction", min=0.0, max=1.0),
+    ] = 0.2,
+    squash_min_uncertain: Annotated[
+        int, typer.Option("--squash-min-uncertain", min=1)
+    ] = 5,
+    squash_max_uncertain: Annotated[
+        int, typer.Option("--squash-max-uncertain", min=1)
+    ] = 50,
+    squash_max_passes: Annotated[
+        int, typer.Option("--squash-max-passes", min=1)
+    ] = 5,
+    squash_min_improvement: Annotated[
+        float,
+        typer.Option(
+            "--squash-min-improvement",
+            min=0.0,
+            max=1.0,
+            help=(
+                "Minimum full-pool mean-uncertainty decrease required to promote; "
+                "zero accepts any measurable decrease"
+            ),
+        ),
+    ] = 0.0,
     metric_budget: Annotated[
         int,
         typer.Option(
             "--max-metric-calls",
             "--metric-budget",
             min=1,
-            help="Maximum GEPA metric calls per optimization round",
+            help=(
+                "Maximum GEPA metric calls per guided optimization round; squash "
+                "uses an automatic pool-sized budget"
+            ),
         ),
     ] = 300,
     concurrency: Annotated[int, typer.Option("--concurrency", min=1)] = 16,
@@ -2749,6 +3353,12 @@ def optimize(
             raise typer.BadParameter("repeat --score-level between 2 and 10 times")
         if score_levels and any(not level.strip() for level in score_levels):
             raise typer.BadParameter("Score level descriptions must be nonempty")
+        if squash_mode and holdout:
+            raise typer.BadParameter("--holdout cannot be combined with --squash")
+        if squash_min_uncertain > squash_max_uncertain:
+            raise typer.BadParameter(
+                "--squash-min-uncertain cannot exceed --squash-max-uncertain"
+            )
         source = data.resolve()
         available = dataset_columns(source)
         if all_columns_concatenated and columns:
@@ -2772,7 +3382,9 @@ def optimize(
                 f"[dim]Using all {len(stories):,} rows; requested pool size was "
                 f"{pool_size:,}.[/dim]"
             )
-        if len(stories) < batch_size:
+        if squash_mode and len(stories) < 5:
+            raise typer.BadParameter("squash requires at least five dataset rows")
+        if not squash_mode and len(stories) < batch_size:
             raise typer.BadParameter(
                 f"dataset has {len(stories):,} rows, fewer than the requested "
                 f"batch size of {batch_size:,}"
@@ -2780,7 +3392,7 @@ def optimize(
         holdout_ids = _holdout_story_ids(
             stories, fraction=0.2 if holdout else 0.0, seed=seed
         )
-        if len(stories) - len(holdout_ids) < batch_size:
+        if not squash_mode and len(stories) - len(holdout_ids) < batch_size:
             raise typer.BadParameter(
                 "the 20% holdout leaves fewer training rows than the requested "
                 f"batch size of {batch_size:,}"
@@ -2859,6 +3471,13 @@ def optimize(
             holdout_story_ids=holdout_ids,
             binary_true_label=true_label,
             binary_false_label=false_label,
+            optimization_mode="squash" if squash_mode else "guided",
+            squash_uncertain_fraction=squash_uncertain_fraction,
+            squash_certain_mix_fraction=squash_certain_mix_fraction,
+            squash_min_uncertain=squash_min_uncertain,
+            squash_max_uncertain=squash_max_uncertain,
+            squash_max_passes=squash_max_passes,
+            squash_min_improvement=squash_min_improvement,
             current_candidate=candidate,
             history=[
                 CandidateHistory(round_number=0, candidate=candidate, decision="seed")
@@ -2867,6 +3486,23 @@ def optimize(
         store = RunStore(run_directory)
         store.initialize(state)
         console.print(f"Run created at [bold]{store.directory}[/bold]")
+
+    if (
+        resume is not None
+        and state.optimization_mode == "squash"
+        and state.pending_candidate is None
+    ):
+        restart = _select_option(
+            "This squash run is complete",
+            [
+                ("s", "Start another full squash exploration"),
+                ("b", "Cancel"),
+            ],
+            option_styles=["red", "dim"],
+        )
+        if restart != "s":
+            console.print("No new squash exploration started.")
+            return
 
     credential_error = backend_credential_error(state.backend, os.environ)
     if credential_error:
@@ -2877,6 +3513,10 @@ def optimize(
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
     session = ClimbSession(state, stories, store, backend)
+
+    if state.optimization_mode == "squash":
+        _run_squash_mode(session, stories, backend)
+        return
 
     try:
         if state.pending_candidate is not None and state.pending_report is not None:
