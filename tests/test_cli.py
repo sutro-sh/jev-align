@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from click import unstyle
 
 from jev_align.cli import (
     _acquisition_context,
@@ -719,7 +720,7 @@ def test_optimize_replaces_climb_as_the_visible_command() -> None:
     assert legacy_result.exit_code == 0
     assert "climb [OPTIONS]" in legacy_result.output
     optimize_help = CliRunner().invoke(cli.app, ["optimize", "--help"])
-    assert "--squash" in optimize_help.output
+    assert "--squash" in unstyle(optimize_help.output)
 
 
 def test_optimize_squash_mode_saves_unlabeled_accepted_candidate(
