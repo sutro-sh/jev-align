@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 import pytest
 
 from jev_align import AIFunction, Capture
-from jev_align import runtime
+from jev_align import jev_gateways, runtime
+from jev_align.backends import default_backend_model
 from jev_align.data import load_stories
 from jev_align.jev import TypeSafeJevEvaluator
 from jev_align.models import (
+    BackendConfig,
     CandidateHistory,
     CandidateSpec,
     Prediction,
@@ -70,6 +76,110 @@ def backend(monkeypatch):
     fake = FakeBackend()
     monkeypatch.setattr(runtime, "create_backend", lambda *_args, **_kwargs: fake)
     return fake
+
+
+@pytest.fixture
+def gateway_http(monkeypatch):
+    response = {"status": 200}
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            requests.append(
+                {
+                    "path": self.path,
+                    "body": json.loads(
+                        self.rfile.read(int(self.headers["Content-Length"]))
+                    ),
+                }
+            )
+            self.send_response(response["status"])
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"answers": {"alignment": {"noul": 0.63, "probability": 0.63}}}
+                ).encode()
+            )
+
+        def log_message(self, _format, *_args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
+        thread.start()
+        opener = build_opener(ProxyHandler({}))
+
+        def local_urlopen(request, timeout):
+            url = urlsplit(request.full_url)
+            assert url.scheme == "https"
+            assert url.netloc in {"api.cloudflare.com", "ai-gateway.vercel.sh"}
+            forwarded = Request(
+                f"http://127.0.0.1:{server.server_port}{url.path}",
+                data=request.data,
+                headers=dict(request.header_items()),
+                method=request.get_method(),
+            )
+            return opener.open(forwarded, timeout=timeout)
+
+        monkeypatch.setattr(jev_gateways, "urlopen", local_urlopen)
+        try:
+            yield response, requests
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("provider", ["cloudflare", "vercel"])
+@pytest.mark.parametrize("http_status", [429, 401, 403, 200])
+def test_runtime_gateway_http_responses(
+    saved_run, gateway_http, monkeypatch, provider, http_status
+):
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "dummy-token")
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "dummy-token")
+    state = saved_run.load_state()
+    state.backend = BackendConfig(
+        provider=provider, model=default_backend_model(provider)
+    )
+    saved_run.save_state(state)
+    response, requests = gateway_http
+    response["status"] = http_status
+
+    with AIFunction.load(saved_run.directory) as function:
+        if http_status == 200:
+            assert function(text="Plane").probability == 0.63
+        else:
+            with pytest.raises(RuntimeError) as error:
+                function(text="Plane")
+            assert isinstance(error.value.__cause__, HTTPError)
+            assert error.value.__cause__.code == http_status
+
+    assert len(requests) == 1
+    assert requests[0]["path"] == (
+        "/client/v4/accounts/test-account/ai/run"
+        if provider == "cloudflare"
+        else "/v4/ai/evaluation-model"
+    )
+    body = requests[0]["body"]
+    evaluation = body["input"] if provider == "cloudflare" else body
+    assert evaluation["state"] == {"text": "Plane"}
+    assert evaluation["questions"]["alignment"]["type"] == (
+        "noul" if provider == "cloudflare" else "boolean"
+    )
+    if http_status == 429:
+        assert "rate limit" in str(error.value).lower()
+        assert "credentials" not in str(error.value).lower()
+    elif http_status != 200:
+        assert str(error.value) == (
+            f"Jev provider returned HTTP {http_status}; check credentials, access, "
+            "and model availability"
+        )
 
 
 def records(path):

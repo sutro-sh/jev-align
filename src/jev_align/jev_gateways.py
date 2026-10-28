@@ -97,6 +97,10 @@ def _post_json(
         with urlopen(request, timeout=60) as response:  # noqa: S310
             payload = json.load(response)
     except HTTPError as error:
+        if error.code == 429:
+            raise RuntimeError(
+                "Jev provider returned HTTP 429; rate limit exceeded, try again later"
+            ) from error
         raise RuntimeError(
             f"Jev provider returned HTTP {error.code}; check credentials, access, "
             "and model availability"
