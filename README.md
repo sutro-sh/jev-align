@@ -98,7 +98,7 @@ Set the credentials above, then select a backend and optional model:
 
 ```shell
 jeva optimize data.csv --question "Is this relevant?" --column text \
-  --backend openrouter --backend-model cloudflare/clef-flash
+  --backend openrouter --backend-model cloudflare/clef
 ```
 
 Cloudflare also offers `@cf/cloudflare/clef` and `@cf/cloudflare/clef-flash`.
