@@ -112,7 +112,7 @@ class FixedBatchSampler:
 
 
 class SquashBatchEvaluator:
-    """Score unlabeled examples solely by Jev-reported certainty."""
+    """Score unlabeled examples solely by backend-reported certainty."""
 
     def __init__(
         self,
@@ -1002,20 +1002,20 @@ def squash_candidate(
         dataset=examples,
         valset=examples,
         objective=(
-            "Maximize Jev's reported certainty for every independent label on these "
+            "Maximize the evaluation model's reported certainty for every independent label on these "
             "unlabeled rows. Correctness is deliberately not measured. Push every "
             "label probability decisively away from 0.5 while preserving independent "
             "multilabel semantics."
             if isinstance(seed_candidate, MultilabelCandidateSpec)
-            else "Maximize Jev's reported confidence on these unlabeled rows. "
+            else "Maximize the evaluation model's reported confidence on these unlabeled rows. "
             "Correctness is deliberately not measured. Force decisive distinctions "
             "between the existing ordered Score levels."
             if isinstance(seed_candidate, ScoreCandidateSpec)
             else
-            "Maximize Jev's reported certainty on these unlabeled rows. Correctness "
+            "Maximize the evaluation model's reported certainty on these unlabeled rows. Correctness "
             "is deliberately not measured. Force decisive exactly-one-class choices."
             if isinstance(seed_candidate, MulticlassCandidateSpec)
-            else "Maximize Jev's reported certainty on these unlabeled rows. Correctness "
+            else "Maximize the evaluation model's reported certainty on these unlabeled rows. Correctness "
             "is deliberately not measured. Reduce probabilities near 0.5 by making "
             "the binary instructions and criteria force decisive predictions."
         ),

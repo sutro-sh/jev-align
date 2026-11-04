@@ -43,7 +43,8 @@ the model's reasoning.
 
 ### Before starting
 
-1. Confirm that one Jev provider is configured: `TYPESAFE_API_KEY`,
+1. Confirm that an evaluation provider is configured: `TYPESAFE_API_KEY`,
+   `PERPLEXITY_API_KEY`, `OPENAI_API_KEY`, `LIQUID_API_KEY`, `OPENROUTER_API_KEY`,
    `AI_GATEWAY_API_KEY`, or both `CLOUDFLARE_ACCOUNT_ID` and
    `CLOUDFLARE_API_TOKEN`.
 2. Confirm a reflection provider is configured: `OPENAI_API_KEY`,
@@ -102,10 +103,14 @@ and prompts work correctly.
 
 ### Reflection providers
 
-GEPA's reflection model is separate from the TypeSafe JEV evaluation model.
+GEPA's reflection model is separate from the selected evaluation model.
 Reflection uses LiteLLM model identifiers. OpenAI, Anthropic, and Gemini are
-listed automatically when their standard keys are present. For another
-provider, pass `--reflection-model provider/model`; in the wizard select
+listed automatically when their standard keys are present. New runs default to
+`openai/gpt-6-luna`, `anthropic/claude-haiku-5-5`, or
+`gemini/gemini-3.8-flash`, in that provider priority order. The curated menu also
+offers GPT-6.1 Sol/Terra and GPT-6 Astra; Claude Sonnet/Opus 5.5 and Fable 5.1;
+and Gemini 4 Argon, 3.5 Flash-Lite, and 3.1 Pro Preview. Existing runs retain their
+saved reflection-model IDs. For another provider, pass `--reflection-model provider/model`; in the wizard select
 **Choose a different model** and then **Enter a custom LiteLLM model**.
 
 Fireworks example:
@@ -143,7 +148,7 @@ jeva optimize DATA \
 
 The provider/model identifier and environment variables must follow the
 [LiteLLM provider configuration](https://docs.litellm.ai/docs/providers).
-Jev evaluation requires the credentials for the selected evaluation backend;
+Evaluation requires the credentials for the selected evaluation backend;
 the reflection provider is separate.
 
 ### Labeling rounds
@@ -378,12 +383,12 @@ directory outside the workspace.
 concatenation. Its return value is a provider-neutral `Prediction`: binary tasks
 expose `probability`, multiclass tasks `choice` and `confidence`, multilabel
 tasks `label_probabilities`, and score tasks `score` and `confidence`. Runtime
-calls require the selected Jev provider's credentials, but not a
+calls require the selected evaluation provider's credentials, but not a
 reflection-model key. Pending
 proposals are never loaded. A run with no accepted proposal uses its seed
 definition.
 
-Capture makes no additional JEV request and does not retry evaluations. By
+Capture makes no additional evaluation request and does not retry evaluations. By
 default it records predictions with ambiguity of at least 0.8 and a random 5%
 audit of the remainder. For binary tasks, 0.8 ambiguity corresponds to
 probabilities from 0.4 through 0.6. Each record includes the evaluated input,
@@ -427,6 +432,9 @@ The main modules are:
 - `src/jev_align/backends.py`: provider-neutral backend contract and factory.
 - `src/jev_align/jev.py`: direct TypeSafe JEV adapter.
 - `src/jev_align/jev_gateways.py`: Cloudflare and Vercel Jev transports.
+- `src/jev_align/decision_backends.py`: Perplexity, OpenAI Decisions, Liquid, OpenRouter, and Clef adapters.
+- `src/jev_align/decision_http.py`: shared HTTP, concurrency, and decision normalization.
+- `src/jev_align/retries.py`: bounded retry delays shared by evaluation backends.
 - `src/jev_align/models.py`: persisted schemas and normalized predictions.
 - `src/jev_align/persistence.py`: run and label storage.
 - `src/jev_align/runtime.py`: synchronous callable interface for saved functions.
@@ -549,8 +557,45 @@ original fixed-pool history stays comparable.
 
 Jev can run through TypeSafe directly (`--backend typesafe`), Cloudflare
 Workers AI (`--backend cloudflare`), or Vercel AI Gateway (`--backend vercel`).
+New runs select Jev 1.14 explicitly: `jev-1.14.0` for TypeSafe,
+`typesafe/jev-1.14.0` for Cloudflare, `typesafe-ai/jev-1.14.0` for Vercel, and
+`typesafe/jev-1.14` for OpenRouter. Existing saved model IDs and legacy
+Jev 1.13 migrations remain pinned; never silently upgrade an existing run.
 Runs persist the provider-neutral backend configuration; `--jev-model` remains
 a compatibility alias for `--backend-model`.
+
+Additional official hosted evaluation backends support all four task types with
+text/JSON inputs:
+
+- `--backend perplexity`: `pplx-decider-v1.2`, using `PERPLEXITY_API_KEY`.
+- `--backend openai`: `gpt-6-luna` through `/v1/decisions`, using `OPENAI_API_KEY`.
+- `--backend openrouter`: `typesafe/jev-1.14`, using `OPENROUTER_API_KEY`.
+  The wizard offers Jev 1.14, Perplexity Decider v1.2, GPT-6 Luna Decisions,
+  Liquid D1.1, Clef, Clef Flash, and a custom decision-model ID. Scripted runs
+  can pass `--backend-model cloudflare/clef-flash` or another OpenRouter decision
+  model ID. Requests use `/api/alpha/decisions`; direct provider keys are not
+  required, and reflection remains configured separately.
+- `--backend liquid`: `d1.1`, using `LIQUID_API_KEY`. An explicit
+  `--backend-model d1` selects the original model identifier.
+- `--backend cloudflare --backend-model @cf/cloudflare/clef` or
+  `@cf/cloudflare/clef-flash`: Clef variants using the existing Cloudflare keys.
+  The wizard offers Jev, Clef, and Clef Flash after Cloudflare is selected.
+
+All evaluation backends retry HTTP 408, 429, and 5xx responses, connection
+failures, and timeouts up to four total attempts, honoring
+`Retry-After` (seconds or HTTP date) and `retry-after-ms`. Missing or invalid
+headers use exponential backoff from 0.5 seconds with jitter. Server cooldowns
+over 60 seconds fail immediately rather than retrying early. TypeSafe SDK
+retries are disabled to avoid multiplying attempts. Permanent 4xx errors and
+invalid responses fail without retries. Capture does not add retries.
+
+Keep provider-specific request and response formats inside adapters. Preserve
+native confidence; do not substitute the highest probability. Refusals and
+malformed responses must fail evaluation rather than inventing predictions.
+Evaluation credentials and reflection credentials are configured independently,
+though OpenAI can use the same key for both roles. Model selection is persisted;
+never silently switch an existing run to a different backend or model.
+
 
 Preserve these product invariants when making changes:
 

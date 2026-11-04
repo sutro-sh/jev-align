@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jev_align.models import (
     BackendConfig,
     CandidateHistory,
@@ -117,3 +119,36 @@ def test_run_store_round_trips_score_state_and_integer_label(tmp_path: Path) -> 
     assert loaded.current_candidate == candidate
     assert store.load_labels()[0].label == 2
     assert type(store.load_labels()[0].label) is int
+
+
+def test_new_states_use_latest_jev_but_legacy_json_keeps_original_default():
+    import json
+
+    state = _state()
+    assert state.backend.model == "jev-1.14.0"
+    legacy = state.model_dump(mode="json", exclude={"backend"})
+    legacy["version"] = 1
+    loaded = RunState.model_validate_json(json.dumps(legacy))
+    assert loaded.backend == BackendConfig(provider="typesafe", model="jev-1.13.0")
+    assert RunState.model_validate(legacy).backend == loaded.backend
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("typesafe", "jev-1.13.0"),
+        ("cloudflare", "typesafe/jev"),
+        ("vercel", "typesafe-ai/jev"),
+        ("openrouter", "typesafe/jev-1.13"),
+    ],
+)
+def test_saved_jev_model_is_not_upgraded_implicitly(tmp_path, provider, model):
+    from jev_align.backends import create_backend
+
+    state = _state()
+    state.backend = BackendConfig(provider=provider, model=model)
+    store = RunStore(tmp_path / "old-run")
+    store.initialize(state)
+    loaded = store.load_state()
+    assert loaded.backend.model == model
+    assert create_backend(loaded.backend, concurrency=1).model == model

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .models import (
+    DEFAULT_JEV_MODEL,
     BackendConfig,
     MulticlassCandidateSpec,
     MultilabelCandidateSpec,
@@ -18,10 +19,24 @@ TaskKind = Literal["binary", "multiclass", "multilabel", "score"]
 UncertaintyKind = Literal["calibrated_probability", "native_confidence"]
 
 DEFAULT_BACKEND_MODELS = {
-    "typesafe": "jev-1.13.0",
-    "cloudflare": "typesafe/jev",
-    "vercel": "typesafe-ai/jev",
+    "typesafe": DEFAULT_JEV_MODEL,
+    "cloudflare": "typesafe/jev-1.14.0",
+    "vercel": "typesafe-ai/jev-1.14.0",
+    "perplexity": "pplx-decider-v1.2",
+    "openai": "gpt-6-luna",
+    "liquid": "d1.1",
+    "openrouter": "typesafe/jev-1.14",
 }
+
+
+OPENROUTER_MODEL_CHOICES = [
+    ("typesafe/jev-1.14", "Jev 1.14"),
+    ("perplexity/pplx-decider-v1.2", "Perplexity Decider v1.2"),
+    ("openai/gpt-6-luna-decisions", "GPT-6 Luna Decisions"),
+    ("liquid/d1.1", "Liquid D1.1"),
+    ("cloudflare/clef", "Clef"),
+    ("cloudflare/clef-flash", "Clef Flash"),
+]
 
 
 @dataclass(frozen=True)
@@ -50,13 +65,31 @@ def create_backend(config: BackendConfig, *, concurrency: int) -> EvaluationBack
 
         return TypeSafeJevEvaluator(model=config.model, concurrency=concurrency)
     if config.provider == "cloudflare":
+        from .decision_backends import CLEF_MODELS, CloudflareClefEvaluator
         from .jev_gateways import CloudflareJevEvaluator
 
+        if config.model in CLEF_MODELS:
+            return CloudflareClefEvaluator(model=config.model, concurrency=concurrency)
         return CloudflareJevEvaluator(model=config.model, concurrency=concurrency)
     if config.provider == "vercel":
         from .jev_gateways import VercelJevEvaluator
 
         return VercelJevEvaluator(model=config.model, concurrency=concurrency)
+    if config.provider in {"perplexity", "openai", "liquid", "openrouter"}:
+        from .decision_backends import (
+            LiquidDecisionEvaluator,
+            OpenAIDecisionEvaluator,
+            OpenRouterDecisionEvaluator,
+            PerplexityDeciderEvaluator,
+        )
+
+        adapter = {
+            "perplexity": PerplexityDeciderEvaluator,
+            "openai": OpenAIDecisionEvaluator,
+            "liquid": LiquidDecisionEvaluator,
+            "openrouter": OpenRouterDecisionEvaluator,
+        }[config.provider]
+        return adapter(model=config.model, concurrency=concurrency)
     raise ValueError(f"unsupported evaluation backend: {config.provider}")
 
 
@@ -75,6 +108,14 @@ def backend_credential_error(
             return f"{', '.join(missing)} must be set for the Cloudflare backend"
     if config.provider == "vercel" and not environment.get("AI_GATEWAY_API_KEY"):
         return "AI_GATEWAY_API_KEY must be set for the Vercel backend"
+    key = {
+        "perplexity": "PERPLEXITY_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "liquid": "LIQUID_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+    }.get(config.provider)
+    if key and not environment.get(key):
+        return f"{key} must be set for the {config.provider} evaluation backend"
     return None
 
 
@@ -88,7 +129,7 @@ def default_backend_model(provider: str) -> str:
 def available_backend_providers(
     environment: Mapping[str, str],
 ) -> list[tuple[str, str]]:
-    """Return configured Jev providers in preferred order."""
+    """Return configured evaluation providers in preferred order."""
     available: list[tuple[str, str]] = []
     if environment.get("TYPESAFE_API_KEY"):
         available.append(("typesafe", "TypeSafe AI (direct)"))
@@ -98,6 +139,14 @@ def available_backend_providers(
         "CLOUDFLARE_API_TOKEN"
     ):
         available.append(("cloudflare", "Cloudflare Workers AI"))
+    for provider, key, label in (
+        ("perplexity", "PERPLEXITY_API_KEY", "Perplexity Decider"),
+        ("openai", "OPENAI_API_KEY", "OpenAI Decisions · GPT-6 Luna"),
+        ("liquid", "LIQUID_API_KEY", "Liquid D1"),
+        ("openrouter", "OPENROUTER_API_KEY", "OpenRouter Decisions"),
+    ):
+        if environment.get(key):
+            available.append((provider, label))
     return available
 
 

@@ -305,6 +305,7 @@ def _configure_test_jev_provider(monkeypatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-typesafe-key")
+    monkeypatch.setattr(cli, "_choose_evaluation_backend", lambda: "typesafe")
 
 
 def test_menu_labels_are_rendered_literally() -> None:
@@ -1458,7 +1459,7 @@ def test_bare_command_guides_user_through_new_run(monkeypatch) -> None:
     assert result.exit_code == 0
     assert captured["data"].name == "hn-stories.csv"
     assert captured["question"] == "Is the post related to aviation?"
-    assert captured["reflection_model"] == "openai/gpt-5.6-luna"
+    assert captured["reflection_model"] == "openai/gpt-6-luna"
     assert captured["columns"] is None
     assert captured["all_columns_concatenated"] is True
     assert captured["pool_size"] == 1000
@@ -1617,7 +1618,7 @@ def test_wizard_can_choose_a_different_reflection_model(monkeypatch) -> None:
         input="n\n\na\nIs it aviation?\n\nc\n3\nc\n",
     )
     assert result.exit_code == 0
-    assert captured["reflection_model"] == "openai/gpt-5.6-terra"
+    assert captured["reflection_model"] == "openai/gpt-6.1-terra"
 
 
 def test_reflection_models_follow_configured_provider_order() -> None:
@@ -1629,18 +1630,18 @@ def test_reflection_models_follow_configured_provider_order() -> None:
         }
     )
 
-    assert models[0] == ("GPT-5.6 Luna", "openai/gpt-5.6-luna")
-    assert models[5] == (
-        "Claude Haiku 4.5",
-        "anthropic/claude-haiku-4-5-20251001",
+    assert models[0] == ("GPT-6 Luna", "openai/gpt-6-luna")
+    assert models[4] == (
+        "Claude Haiku 5.5",
+        "anthropic/claude-haiku-5-5",
     )
-    assert models[9] == ("Gemini 3.8 Flash", "gemini/gemini-3.8-flash")
+    assert models[8] == ("Gemini 3.8 Flash", "gemini/gemini-3.8-flash")
 
 
 def test_reflection_default_falls_back_by_provider_priority() -> None:
     assert cli._default_reflection_model(
         {"CLAUDE_API_KEY": "claude", "GEMINI_API_KEY": "gemini"}
-    ) == "anthropic/claude-haiku-4-5-20251001"
+    ) == "anthropic/claude-haiku-5-5"
     assert cli._default_reflection_model(
         {"GEMINI_API_KEY": "gemini"}
     ) == "gemini/gemini-3.8-flash"
@@ -1664,7 +1665,7 @@ def test_reflection_picker_defaults_to_haiku_with_only_claude_key(
     monkeypatch.setattr(console, "input", lambda _prompt: "")
 
     assert cli._choose_reflection_model() == (
-        "anthropic/claude-haiku-4-5-20251001"
+        "anthropic/claude-haiku-5-5"
     )
 
 
@@ -2004,3 +2005,102 @@ def test_run_results_are_row_aligned_jsonl(tmp_path: Path, monkeypatch) -> None:
         "value": True,
         "true_probability": 0.8,
     }
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("perplexity", "pplx-decider-v1.2"),
+        ("openai", "gpt-6-luna"),
+        ("liquid", "d1.1"),
+        ("cloudflare", "typesafe/jev-1.14.0"),
+        ("cloudflare", "@cf/cloudflare/clef"),
+        ("cloudflare", "@cf/cloudflare/clef-flash"),
+        ("openrouter", "typesafe/jev-1.14"),
+        ("openrouter", "perplexity/pplx-decider-v1.2"),
+        ("openrouter", "openai/gpt-6-luna-decisions"),
+        ("openrouter", "liquid/d1.1"),
+        ("openrouter", "cloudflare/clef"),
+        ("openrouter", "cloudflare/clef-flash"),
+    ],
+)
+def test_wizard_passes_selected_backend_and_model(monkeypatch, provider, model):
+    captured = {}
+    monkeypatch.setattr(cli, "_choose_evaluation_backend", lambda: provider)
+    monkeypatch.setattr(cli, "_choose_dataset", lambda _root: SAMPLE_DATA / "hn-stories.csv")
+    monkeypatch.setattr(cli, "_choose_pool_size", lambda _path: 100)
+    monkeypatch.setattr(cli, "_choose_reflection_model", lambda: "openai/reflection")
+    def select(prompt, options):
+        if prompt == "Evaluation model":
+            if provider == "cloudflare":
+                assert [key for key, _ in options] == [
+                    "typesafe/jev-1.14.0", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"
+                ]
+            else:
+                assert model in [key for key, _ in options]
+            return model
+        return "c" if prompt == "Create this AI Function" else "s"
+    monkeypatch.setattr(cli, "_select_option", select)
+    monkeypatch.setattr(cli, "optimize", lambda **kwargs: captured.update(kwargs))
+    cli._new_run_wizard()
+    assert captured["backend_name"] == provider
+    assert captured["backend_model"] == model
+
+
+def test_backend_picker_discovers_new_providers(monkeypatch):
+    monkeypatch.setattr(cli.os, "environ", {
+        "OPENAI_API_KEY": "openai", "PERPLEXITY_API_KEY": "perplexity",
+        "LIQUID_API_KEY": "liquid", "OPENROUTER_API_KEY": "openrouter",
+    })
+    def select(prompt, options):
+        assert prompt == "Model backend"
+        assert [label for _, label in options] == [
+            "Perplexity Decider", "OpenAI Decisions · GPT-6 Luna", "Liquid D1", "OpenRouter Decisions",
+        ]
+        return "2"
+    monkeypatch.setattr(cli, "_select_option", select)
+    assert cli._choose_evaluation_backend() == "openai"
+
+
+def test_backend_picker_reports_new_credentials(monkeypatch):
+    monkeypatch.setattr(cli.os, "environ", {})
+    with pytest.raises(cli.typer.BadParameter) as error:
+        cli._choose_evaluation_backend()
+    for key in ("OPENAI_API_KEY", "PERPLEXITY_API_KEY", "LIQUID_API_KEY", "OPENROUTER_API_KEY"):
+        assert key in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "key,label,model",
+    [
+        ("OPENAI_API_KEY", "GPT-6.1 Sol", "openai/gpt-6.1-sol"),
+        ("ANTHROPIC_API_KEY", "Claude Fable 5.1", "anthropic/claude-fable-5-1"),
+        ("GEMINI_API_KEY", "Gemini 4 Argon", "gemini/gemini-4-argon"),
+    ],
+)
+def test_reflection_picker_selects_current_alternative(monkeypatch, key, label, model):
+    monkeypatch.setattr(cli.os, "environ", {key: "test-key"})
+
+    def select(prompt, options):
+        if prompt == "GEPA reflection model":
+            return "c"
+        assert prompt == "Choose model"
+        return next(choice for choice, name in options if name == label)
+
+    monkeypatch.setattr(cli, "_select_option", select)
+    assert cli._choose_reflection_model() == model
+
+
+def test_reflection_picker_preserves_custom_model_identifier(monkeypatch):
+    monkeypatch.setattr(cli.os, "environ", {"OPENAI_API_KEY": "test-key"})
+    monkeypatch.setattr(
+        cli, "_select_option", lambda prompt, _options: "c" if prompt == "GEPA reflection model" else "m"
+    )
+    monkeypatch.setattr(cli, "_prompt_value", lambda _prompt: "openai/gpt-5.6-luna")
+    assert cli._choose_reflection_model() == "openai/gpt-5.6-luna"
+
+
+def test_openrouter_model_picker_accepts_custom_decision_model(monkeypatch):
+    monkeypatch.setattr(cli, "_select_option", lambda *_args: "custom")
+    monkeypatch.setattr(cli, "_prompt_value", lambda _prompt: "liquid/d1-ultra")
+    assert cli._choose_evaluation_model("openrouter") == "liquid/d1-ultra"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Callable
@@ -16,12 +15,19 @@ from rich.progress import (
 
 from .backends import BackendCapabilities, EvaluationBackend
 from .models import (
+    DEFAULT_JEV_MODEL,
     MulticlassCandidateSpec,
     MultilabelCandidateSpec,
     Prediction,
     ScoreCandidateSpec,
     Story,
     TaskSpec,
+)
+from .retries import (
+    DEFAULT_ATTEMPTS,
+    INITIAL_BACKOFF_SECONDS,
+    RETRYABLE_HTTP_STATUSES,
+    retry_delay,
 )
 
 
@@ -38,10 +44,10 @@ class TypeSafeJevEvaluator:
             "score": "native_confidence",
         },
     )
-    model: str = "jev-1.13.0"
+    model: str = DEFAULT_JEV_MODEL
     concurrency: int = 16
-    transient_attempts: int = 4
-    transient_backoff_seconds: float = 0.5
+    transient_attempts: int = DEFAULT_ATTEMPTS
+    transient_backoff_seconds: float = INITIAL_BACKOFF_SECONDS
 
     def evaluate_many(
         self, candidate: TaskSpec, stories: Sequence[Story]
@@ -84,6 +90,8 @@ class TypeSafeJevEvaluator:
             Choice,
             Noul,
             Score,
+            RetryPolicy,
+            TypeSafeAPIError,
             TypeSafeAPIConnectionError,
             TypeSafeAPITimeoutError,
             TypeSafeInternalServerError,
@@ -137,7 +145,10 @@ class TypeSafeJevEvaluator:
                 )
             }
 
-        async with AsyncTypeSafeClient(model=self.model) as client:
+        # Own the retry count here instead of multiplying it by SDK retries.
+        async with AsyncTypeSafeClient(
+            model=self.model, retry=RetryPolicy(max_retries=0)
+        ) as client:
 
             async def evaluate(story: Story) -> Prediction:
                 for attempt in range(self.transient_attempts):
@@ -147,13 +158,22 @@ class TypeSafeJevEvaluator:
                                 state=story.state(), questions=questions
                             )
                         break
-                    except transient_errors:
+                    except (*transient_errors, TypeSafeAPIError) as error:
+                        if (
+                            isinstance(error, TypeSafeAPIError)
+                            and error.status not in RETRYABLE_HTTP_STATUSES
+                        ):
+                            raise
                         if attempt + 1 >= self.transient_attempts:
                             raise
-                        base_delay = self.transient_backoff_seconds * (2**attempt)
-                        await asyncio.sleep(
-                            base_delay + random.uniform(0.0, base_delay * 0.25)
+                        delay = retry_delay(
+                            attempt,
+                            getattr(error, "headers", None),
+                            initial_delay=self.transient_backoff_seconds,
                         )
+                        if delay is None:
+                            raise
+                        await asyncio.sleep(delay)
                 if isinstance(candidate, MulticlassCandidateSpec):
                     answer = result.answers["alignment"]
                     prediction = Prediction(

@@ -68,8 +68,8 @@ def test_gateway_backend_factories_and_defaults() -> None:
     assert cloudflare.concurrency == 2
     assert isinstance(vercel, VercelJevEvaluator)
     assert vercel.concurrency == 4
-    assert default_backend_model("cloudflare") == "typesafe/jev"
-    assert default_backend_model("vercel") == "typesafe-ai/jev"
+    assert default_backend_model("cloudflare") == "typesafe/jev-1.14.0"
+    assert default_backend_model("vercel") == "typesafe-ai/jev-1.14.0"
 
 
 def test_available_backends_are_ordered_and_require_complete_cloudflare_config() -> (
@@ -105,3 +105,24 @@ def test_backend_must_supply_uncertainty_for_the_task() -> None:
 
     with pytest.raises(ValueError, match="does not provide usable uncertainty"):
         validate_backend_for_task(backend, candidate)
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("typesafe", "jev-1.14.0"),
+        ("cloudflare", "typesafe/jev-1.14.0"),
+        ("vercel", "typesafe-ai/jev-1.14.0"),
+        ("openrouter", "typesafe/jev-1.14"),
+    ],
+)
+def test_new_jev_backends_select_explicit_114_models(provider, model):
+    config = BackendConfig(provider=provider, model=default_backend_model(provider))
+    backend = create_backend(config, concurrency=1)
+    assert config.model == model
+    assert backend.model == model
+
+
+def test_direct_jev_defaults_agree_with_persisted_configuration():
+    assert BackendConfig().model == "jev-1.14.0"
+    assert TypeSafeJevEvaluator().model == "jev-1.14.0"

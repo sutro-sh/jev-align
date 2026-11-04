@@ -11,7 +11,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import pytest
 
 from jev_align import AIFunction, Capture
-from jev_align import jev_gateways, runtime
+from jev_align import decision_http, runtime
 from jev_align.backends import default_backend_model
 from jev_align.data import load_stories
 from jev_align.jev import TypeSafeJevEvaluator
@@ -126,7 +126,7 @@ def gateway_http(monkeypatch):
             )
             return opener.open(forwarded, timeout=timeout)
 
-        monkeypatch.setattr(jev_gateways, "urlopen", local_urlopen)
+        monkeypatch.setattr(decision_http, "urlopen", local_urlopen)
         try:
             yield response, requests
         finally:
@@ -136,10 +136,11 @@ def gateway_http(monkeypatch):
 
 
 @pytest.mark.parametrize("provider", ["cloudflare", "vercel"])
-@pytest.mark.parametrize("http_status", [429, 401, 403, 200])
+@pytest.mark.parametrize("http_status", [429, 503, 401, 403, 200])
 def test_runtime_gateway_http_responses(
     saved_run, gateway_http, monkeypatch, provider, http_status
 ):
+    monkeypatch.setattr(decision_http.time, "sleep", lambda _delay: None)
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
     monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "dummy-token")
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "dummy-token")
@@ -157,10 +158,10 @@ def test_runtime_gateway_http_responses(
         else:
             with pytest.raises(RuntimeError) as error:
                 function(text="Plane")
-            assert isinstance(error.value.__cause__, HTTPError)
-            assert error.value.__cause__.code == http_status
+            assert isinstance(error.value.__cause__.__cause__, HTTPError)
+            assert error.value.__cause__.__cause__.code == http_status
 
-    assert len(requests) == 1
+    assert len(requests) == (4 if http_status in {429, 503} else 1)
     assert requests[0]["path"] == (
         "/client/v4/accounts/test-account/ai/run"
         if provider == "cloudflare"
@@ -175,11 +176,14 @@ def test_runtime_gateway_http_responses(
     if http_status == 429:
         assert "rate limit" in str(error.value).lower()
         assert "credentials" not in str(error.value).lower()
+    elif http_status == 503:
+        assert "temporary provider failure" in str(error.value)
+        assert "credentials" not in str(error.value)
     elif http_status != 200:
-        assert str(error.value) == (
-            f"Jev provider returned HTTP {http_status}; check credentials, access, "
+        assert (
+            f"Evaluation provider returned HTTP {http_status}; check credentials, access, "
             "and model availability"
-        )
+        ) in str(error.value)
 
 
 def records(path):

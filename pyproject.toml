@@ -42,6 +42,8 @@ dev = [
 ]
 
 [project.scripts]
+decision-align = "jev_align.cli:app"
+decal = "jev_align.cli:app"
 jev-align = "jev_align.cli:app"
 jeva = "jev_align.cli:app"
 
