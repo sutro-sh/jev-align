@@ -11,7 +11,7 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ALIASES = ("decision-align", "decal")
+ALIASES = ("decision-align",)
 
 
 def alias_metadata(name: str, project: dict) -> str:

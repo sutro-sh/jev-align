@@ -9,15 +9,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build and publish
+  build:
+    name: Build and validate
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/jev-align
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Check out the release tag
@@ -56,6 +52,47 @@ jobs:
       - name: Check distribution metadata
         run: uvx twine check dist/pypi/*
 
+      - name: Store validated distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/pypi/
+          if-no-files-found: error
+
+  publish:
+    name: Publish ${{ matrix.project }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: jev-align
+            distribution: jev_align
+            environment: pypi
+          - project: decision-align
+            distribution: decision_align
+            environment: pypi-decision-align
+    environment:
+      name: ${{ matrix.environment }}
+      url: https://pypi.org/p/${{ matrix.project }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Retrieve validated distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/all/
+
+      - name: Select this project's distributions
+        env:
+          DISTRIBUTION: ${{ matrix.distribution }}
+        run: |
+          mkdir -p dist/pypi
+          cp dist/all/"${DISTRIBUTION}"-*.whl dist/all/"${DISTRIBUTION}"-*.tar.gz dist/pypi/
+
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -63,8 +100,8 @@ jobs:
 
   report-failure:
     name: Report publish failure
-    if: ${{ always() && needs.publish.result == 'failure' }}
-    needs: publish
+    if: ${{ always() && (needs.build.result == 'failure' || needs.publish.result == 'failure') }}
+    needs: [build, publish]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -74,7 +111,7 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          echo "::error title=PyPI release failed::${GITHUB_REF_NAME} was not fully published. Inspect all three PyPI projects. ${RUN_URL}"
+          echo "::error title=PyPI release failed::${GITHUB_REF_NAME} was not fully published. Inspect both PyPI projects. ${RUN_URL}"
           {
             echo "## ❌ PyPI release failed"
             echo
@@ -92,7 +129,7 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `The publish workflow failed, so **${tag} may be only partially available on PyPI**.`,
-              'Check jev-align, decision-align, and decal before recovering the release.',
+              'Check jev-align and decision-align before recovering the release.',
               '',
               `Failed run: ${runUrl}`,
               '',
