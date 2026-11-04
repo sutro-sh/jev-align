@@ -20,7 +20,7 @@ check:
 	uv run --no-active --quiet ruff check src tests
 
 build: check
-	uv build --out-dir "$(RELEASE_DIST)"
+	uv run --no-active --no-sync python scripts/build_release.py --out-dir "$(RELEASE_DIST)"
 	uvx twine check "$(RELEASE_DIST)"/*
 
 release-check:
@@ -50,7 +50,7 @@ release-check:
 		exit 1; \
 	fi
 	@$(MAKE) check
-	uv build --out-dir "$(RELEASE_DIST)"
+	uv run --no-active --no-sync python scripts/build_release.py --out-dir "$(RELEASE_DIST)"
 	uvx twine check "$(RELEASE_DIST)"/*
 
 release: release-check

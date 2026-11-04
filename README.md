@@ -1,7 +1,11 @@
 # jev-align
 
+> [!TIP]
+> **New!** More decision models: Perplexity, OpenAI, Liquid AI, and Cloudflare Clef, plus OpenRouter. See [model backends](#model-backends).
+
 `jev-align` is an experimental CLI from [Sutro](https://sutro.sh/) for building
-AI Functions with [TypeSafe's Jev](https://docs.typesafe.ai/introduction).
+AI Functions with decision models from TypeSafe, Perplexity, OpenAI, Liquid AI,
+and Cloudflare.
 
 It finds uncertain examples, asks you to label them, and uses
 [GEPA](https://gepa-ai.github.io/gepa/) to improve the function. Use it in your
@@ -18,12 +22,13 @@ Requires Python 3.11 or newer.
 
 ```shell
 uv tool install jev-align
-export TYPESAFE_API_KEY="..." # Or use Vercel or Cloudflare below
+export TYPESAFE_API_KEY="..." # Or configure another model backend below
 export OPENAI_API_KEY="..." # or ANTHROPIC_API_KEY / GEMINI_API_KEY
 jeva
 ```
 
-Start the CLI with either `jeva` or `jev-align`.
+CLI aliases: `decal`, `decision-align`, `jeva`, `jev-align`.
+Install aliases: `uv tool install decision-align` or `uv tool install decal`.
 
 Use `pip install jev-align` if you do not use
 [uv](https://docs.astral.sh/uv/). The guided setup discovers local CSV,
@@ -77,35 +82,54 @@ Use repeated `--class "NAME=DESCRIPTION"` options for multiclass or multilabel
 tasks, and repeated `--score-level` options for scoring tasks. Run
 `jeva optimize --help` for the complete flag reference.
 
-## Jev providers
+## Model backends
 
-Jev can run directly through TypeSafe AI, Vercel AI Gateway, or Cloudflare
-Workers AI. The guided setup detects configured providers and lets you choose.
+All backends support binary, multiclass, multilabel, and score tasks with
+text/JSON inputs. The guided setup detects configured providers.
+
+| `--backend` | Example `--backend-model` | Credentials |
+| --- | --- | --- |
+| `typesafe` | `jev-1.14.0` | `TYPESAFE_API_KEY` |
+| `vercel` | `typesafe-ai/jev-1.14.0` | `AI_GATEWAY_API_KEY` |
+| `cloudflare` | `@cf/cloudflare/clef` | `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` |
+| `perplexity` | `pplx-decider-v1.2` | `PERPLEXITY_API_KEY` |
+| `openai` | `gpt-6-luna` (Decisions API) | `OPENAI_API_KEY` |
+| `liquid` | `d1.1` | `LIQUID_API_KEY` |
+| `openrouter` | `typesafe/jev-1.14` | `OPENROUTER_API_KEY` |
+
+Set the credentials above, then select a backend and optional model:
 
 ```shell
-# Vercel AI Gateway
-export AI_GATEWAY_API_KEY="..."
 jeva optimize data.csv --question "Is this relevant?" --column text \
-  --backend vercel
-
-# Cloudflare Workers AI
-export CLOUDFLARE_ACCOUNT_ID="..."
-export CLOUDFLARE_API_TOKEN="..."
-jeva optimize data.csv --question "Is this relevant?" --column text \
-  --backend cloudflare
+  --backend openrouter --backend-model cloudflare/clef
 ```
 
-These routes do not require a `TYPESAFE_API_KEY`. The chosen provider is saved
-with the AI Function, so later runtime calls use the same provider. GEPA's
-reflection model is configured separately.
+Cloudflare defaults to `typesafe/jev-1.14.0` and also offers `@cf/cloudflare/clef-flash`.
+OpenRouter offers Jev, Perplexity Decider, GPT-6 Luna Decisions, Liquid D1.1,
+Clef, Clef Flash, and custom decision-model IDs using only `OPENROUTER_API_KEY`.
+
+New runs default to TypeSafe Jev 1.14. Saved runs retain their backend and model;
+credentials come from the environment. `--jev-model` remains an alias for
+`--backend-model`. GEPA reflection is configured separately.
+
+Backends preserve native probabilities and confidence and reject malformed
+responses. Transient failures receive up to four attempts, honoring server
+retry delays; delays over 60 seconds fail immediately.
 
 ## Reflection models
 
-GEPA's reflection model is separate from the JEV model evaluating your data.
-OpenAI, Anthropic, and Gemini models are detected automatically. Any
-[LiteLLM provider](https://docs.litellm.ai/docs/providers)—including Fireworks,
-local vLLM, and other OpenAI-compatible endpoints—can be supplied with
-`--reflection-model provider/model`.
+GEPA's reflection model is separate from the decision model evaluating your data.
+The setup menu detects OpenAI, Anthropic, and Gemini keys.
+
+| Provider | Default for new runs | Other menu choices |
+| --- | --- | --- |
+| OpenAI | GPT-6 Luna | GPT-6.1 Sol, GPT-6.1 Terra, GPT-6 Astra |
+| Anthropic | Claude Haiku 5.5 | Claude Sonnet 5.5, Claude Opus 5.5, Claude Fable 5.1 |
+| Gemini | Gemini 3.8 Flash | Gemini 4 Argon, Gemini 3.5 Flash-Lite, Gemini 3.1 Pro Preview |
+
+New runs prefer OpenAI, then Anthropic, then Gemini. Saved runs retain their
+model. Use `--reflection-model provider/model` for any
+[LiteLLM provider](https://docs.litellm.ai/docs/providers), including local vLLM:
 
 ```shell
 export HOSTED_VLLM_API_BASE="http://localhost:8000/v1"
@@ -206,8 +230,8 @@ jeva functions
 ## Experimental squash mode
 
 Squash is an intentionally dangerous, label-free demo that asks GEPA to reduce
-Jev's uncertainty on a fixed dataset. Lower uncertainty is not correctness: a
-run can succeed by confidently assigning every row the same answer.
+the evaluation model's uncertainty on a fixed dataset. Lower uncertainty is not
+correctness: a run can succeed by confidently assigning every row the same answer.
 
 Select squash under **Advanced**, or pass `--squash`:
 

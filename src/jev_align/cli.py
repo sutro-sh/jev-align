@@ -38,6 +38,7 @@ from .data import (
     source_sha256,
 )
 from .backends import (
+    OPENROUTER_MODEL_CHOICES,
     EvaluationBackend,
     available_backend_providers,
     backend_credential_error,
@@ -83,26 +84,28 @@ console = Console()
 PYPI_PROJECT_NAME = "jev-align"
 PYPI_JSON_URL = f"https://pypi.org/pypi/{PYPI_PROJECT_NAME}/json"
 UPDATE_CHECK_TIMEOUT_SECONDS = 2.0
-DEFAULT_REFLECTION_MODEL = "openai/gpt-5.6-luna"
-ANTHROPIC_DEFAULT_REFLECTION_MODEL = "anthropic/claude-haiku-4-5-20251001"
+DEFAULT_REFLECTION_MODEL = "openai/gpt-6-luna"
+ANTHROPIC_DEFAULT_REFLECTION_MODEL = "anthropic/claude-haiku-5-5"
 GEMINI_DEFAULT_REFLECTION_MODEL = "gemini/gemini-3.8-flash"
+# Curated text-generation models, checked against provider catalogs 2026-11-04.
+# Keep the inexpensive provider default first; saved runs retain their own IDs.
 REFLECTION_MODELS = {
     "openai": [
-        ("GPT-5.6 Luna", DEFAULT_REFLECTION_MODEL),
-        ("GPT-5.6 Sol", "openai/gpt-5.6-sol"),
-        ("GPT-5.6 Terra", "openai/gpt-5.6-terra"),
+        ("GPT-6 Luna", DEFAULT_REFLECTION_MODEL),
+        ("GPT-6.1 Sol", "openai/gpt-6.1-sol"),
+        ("GPT-6.1 Terra", "openai/gpt-6.1-terra"),
         ("GPT-6 Astra", "openai/gpt-6-astra"),
-        ("GPT-5.5", "openai/gpt-5.5"),
     ],
     "anthropic": [
-        ("Claude Haiku 4.5", ANTHROPIC_DEFAULT_REFLECTION_MODEL),
-        ("Claude Sonnet 4.6", "anthropic/claude-sonnet-4-6"),
-        ("Claude Opus 4.8", "anthropic/claude-opus-4-8"),
-        ("Claude Fable 5", "anthropic/claude-fable-5"),
+        ("Claude Haiku 5.5", ANTHROPIC_DEFAULT_REFLECTION_MODEL),
+        ("Claude Sonnet 5.5", "anthropic/claude-sonnet-5-5"),
+        ("Claude Opus 5.5", "anthropic/claude-opus-5-5"),
+        ("Claude Fable 5.1", "anthropic/claude-fable-5-1"),
     ],
     "gemini": [
         ("Gemini 3.8 Flash", GEMINI_DEFAULT_REFLECTION_MODEL),
-        ("Gemini 3.7 Flash", "gemini/gemini-3.7-flash"),
+        ("Gemini 4 Argon", "gemini/gemini-4-argon"),
+        ("Gemini 3.5 Flash-Lite", "gemini/gemini-3.5-flash-lite"),
         ("Gemini 3.1 Pro Preview", "gemini/gemini-3.1-pro-preview"),
     ],
 }
@@ -693,6 +696,13 @@ def _running_in_virtual_environment() -> bool:
 
 
 def _upgrade_commands() -> list[list[str]]:
+    packages = [PYPI_PROJECT_NAME]
+    for alias in ("decision-align", "decal"):
+        try:
+            distribution(alias)
+        except PackageNotFoundError:
+            continue
+        packages.append(alias)
     commands: list[list[str]] = []
     uv = shutil.which("uv")
     if uv is not None and _running_in_virtual_environment():
@@ -704,11 +714,11 @@ def _upgrade_commands() -> list[list[str]]:
                 "--python",
                 sys.executable,
                 "--upgrade",
-                PYPI_PROJECT_NAME,
+                *packages,
             ]
         )
     commands.append(
-        [sys.executable, "-m", "pip", "install", "--upgrade", PYPI_PROJECT_NAME]
+        [sys.executable, "-m", "pip", "install", "--upgrade", *packages]
     )
     return commands
 
@@ -829,7 +839,7 @@ def _show_startup_banner() -> None:
     tagline = Text.from_markup(
         "[bold]An experiment from [link=https://sutro.sh]sutro.sh[/link][/bold]"
     )
-    package_name = Text("jev-align", style="bold bright_cyan")
+    package_name = Text("jev-align · decision-align", style="bold bright_cyan")
     github_url = "https://github.com/sutro-sh/jev-align"
     readme_url = "https://github.com/sutro-sh/jev-align#readme"
     github_link = Text.assemble(
@@ -1000,6 +1010,7 @@ def _holdout_story_ids(
 def _new_run_wizard() -> None:
     console.print(Panel("Create a new AI Function", title="jev-align"))
     backend_name = _choose_evaluation_backend()
+    backend_model = _choose_evaluation_model(backend_name)
     root = Path.cwd()
     data = _choose_dataset(root)
     pool_size = _choose_pool_size(data)
@@ -1168,6 +1179,7 @@ def _new_run_wizard() -> None:
         true_label=true_label,
         false_label=false_label,
         backend_name=backend_name,
+        backend_model=backend_model,
         squash_mode=squash_mode,
         squash_max_passes=squash_max_passes,
     )
@@ -1186,19 +1198,41 @@ def _choose_evaluation_backend() -> str:
     providers = available_backend_providers(os.environ)
     if not providers:
         raise typer.BadParameter(
-            "no Jev provider credentials detected; set TYPESAFE_API_KEY, "
+            "no model backend credentials detected; set TYPESAFE_API_KEY, "
+            "PERPLEXITY_API_KEY, OPENAI_API_KEY, LIQUID_API_KEY, OPENROUTER_API_KEY, "
             "AI_GATEWAY_API_KEY, or both CLOUDFLARE_ACCOUNT_ID and "
             "CLOUDFLARE_API_TOKEN"
         )
     if len(providers) == 1:
         provider, label = providers[0]
-        console.print(f"[dim]Jev provider: {label}[/dim]")
+        console.print(f"[dim]Model backend: {label}[/dim]")
         return provider
     selected = _select_option(
-        "Jev provider",
+        "Model backend",
         [(str(index), label) for index, (_, label) in enumerate(providers, start=1)],
     )
     return providers[int(selected) - 1][0]
+
+
+def _choose_evaluation_model(provider: str) -> str:
+    if provider == "openrouter":
+        model = _select_option(
+            "Evaluation model",
+            [*OPENROUTER_MODEL_CHOICES, ("custom", "Enter a custom OpenRouter decision model")],
+        )
+        if model == "custom":
+            return _prompt_value("OpenRouter decision model ID")
+        return model
+    if provider == "cloudflare":
+        return _select_option(
+            "Evaluation model",
+            [
+                (default_backend_model("cloudflare"), "Jev 1.14"),
+                ("@cf/cloudflare/clef", "Clef"),
+                ("@cf/cloudflare/clef-flash", "Clef Flash"),
+            ],
+        )
+    return default_backend_model(provider)
 
 
 def _available_reflection_models(
@@ -2467,7 +2501,7 @@ def _show_squash_report(report: SquashRunReport) -> None:
     console.print(
         Panel(
             "No labels were used and correctness was not measured. This candidate "
-            "was optimized only to make Jev report higher confidence. A collapse to "
+            "was optimized only to make the evaluation model report higher confidence. A collapse to "
             "one output pattern is a successful confidence hack, not evidence of quality.",
             title="DANGER · CONFIDENCE HACKING",
             border_style="red",
@@ -2873,7 +2907,7 @@ def _show_latest_optimized(saved: SavedFunction) -> None:
             else "Disabled"
         ),
     )
-    setup.add_row("Evaluation backend", state.backend.provider)
+    setup.add_row("Model backend", state.backend.provider)
     setup.add_row("Evaluation model", state.backend.model)
     setup.add_row("GEPA model", state.reflection_model)
     setup.add_row("Max GEPA metric calls", str(state.metric_budget))
@@ -3208,7 +3242,10 @@ def optimize(
         str,
         typer.Option(
             "--backend",
-            help="Jev provider: typesafe, vercel, or cloudflare",
+            help=(
+                "Model backend: typesafe, vercel, cloudflare, "
+                "perplexity, openai, liquid, or openrouter"
+            ),
         ),
     ] = "typesafe",
     backend_model: Annotated[
@@ -3236,7 +3273,7 @@ def optimize(
         typer.Option(
             "--squash",
             help=(
-                "Dangerously optimize Jev confidence without collecting labels; "
+                "Dangerously optimize evaluation-model confidence without collecting labels; "
                 "available for every task type"
             ),
         ),

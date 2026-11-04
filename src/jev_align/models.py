@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+
+DEFAULT_JEV_MODEL = "jev-1.14.0"
 
 
 class Story(BaseModel):
@@ -431,7 +434,7 @@ class BackendConfig(BaseModel):
     """Persisted identity and options for an AI Function evaluation backend."""
 
     provider: str = "typesafe"
-    model: str = "jev-1.13.0"
+    model: str = DEFAULT_JEV_MODEL
     options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("provider", "model")
@@ -476,11 +479,14 @@ class RunState(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_backend(cls, value: Any) -> Any:
+    def migrate_legacy_backend(cls, value: Any, info: ValidationInfo) -> Any:
         if not isinstance(value, dict):
             return value
         migrated = dict(value)
-        if "backend" not in migrated:
+        # New Python-created states use BackendConfig's current default. Saved
+        # states without a backend retain the historical model when migrated.
+        legacy = info.mode == "json" or "version" in migrated or "jev_model" in migrated
+        if "backend" not in migrated and legacy:
             migrated["backend"] = {
                 "provider": "typesafe",
                 "model": migrated.pop("jev_model", "jev-1.13.0"),
