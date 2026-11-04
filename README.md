@@ -1,5 +1,8 @@
 # jev-align
 
+> [!TIP]
+> **New!** More decision models: Perplexity, OpenAI, Liquid AI, and Cloudflare Clef, plus OpenRouter. See [model backends](#model-backends).
+
 `jev-align` is an experimental CLI from [Sutro](https://sutro.sh/) for building
 AI Functions with decision models from TypeSafe, Perplexity, OpenAI, Liquid AI,
 and Cloudflare.
@@ -84,11 +87,11 @@ tasks, and repeated `--score-level` options for scoring tasks. Run
 All backends support binary, multiclass, multilabel, and score tasks with
 text/JSON inputs. The guided setup detects configured providers.
 
-| `--backend` | Default `--backend-model` | Credentials |
+| `--backend` | Example `--backend-model` | Credentials |
 | --- | --- | --- |
 | `typesafe` | `jev-1.14.0` | `TYPESAFE_API_KEY` |
 | `vercel` | `typesafe-ai/jev-1.14.0` | `AI_GATEWAY_API_KEY` |
-| `cloudflare` | `typesafe/jev-1.14.0` | `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` |
+| `cloudflare` | `@cf/cloudflare/clef` | `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` |
 | `perplexity` | `pplx-decider-v1.2` | `PERPLEXITY_API_KEY` |
 | `openai` | `gpt-6-luna` (Decisions API) | `OPENAI_API_KEY` |
 | `liquid` | `d1.1` | `LIQUID_API_KEY` |
@@ -101,7 +104,7 @@ jeva optimize data.csv --question "Is this relevant?" --column text \
   --backend openrouter --backend-model cloudflare/clef
 ```
 
-Cloudflare also offers `@cf/cloudflare/clef` and `@cf/cloudflare/clef-flash`.
+Cloudflare defaults to `typesafe/jev-1.14.0` and also offers `@cf/cloudflare/clef-flash`.
 OpenRouter offers Jev, Perplexity Decider, GPT-6 Luna Decisions, Liquid D1.1,
 Clef, Clef Flash, and custom decision-model IDs using only `OPENROUTER_API_KEY`.
 
