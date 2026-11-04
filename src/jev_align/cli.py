@@ -696,6 +696,13 @@ def _running_in_virtual_environment() -> bool:
 
 
 def _upgrade_commands() -> list[list[str]]:
+    packages = [PYPI_PROJECT_NAME]
+    for alias in ("decision-align", "decal"):
+        try:
+            distribution(alias)
+        except PackageNotFoundError:
+            continue
+        packages.append(alias)
     commands: list[list[str]] = []
     uv = shutil.which("uv")
     if uv is not None and _running_in_virtual_environment():
@@ -707,11 +714,11 @@ def _upgrade_commands() -> list[list[str]]:
                 "--python",
                 sys.executable,
                 "--upgrade",
-                PYPI_PROJECT_NAME,
+                *packages,
             ]
         )
     commands.append(
-        [sys.executable, "-m", "pip", "install", "--upgrade", PYPI_PROJECT_NAME]
+        [sys.executable, "-m", "pip", "install", "--upgrade", *packages]
     )
     return commands
 

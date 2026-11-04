@@ -25,6 +25,7 @@ jeva
 ```
 
 CLI aliases: `decal`, `decision-align`, `jeva`, `jev-align`.
+Install aliases: `uv tool install decision-align` or `uv tool install decal`.
 
 Use `pip install jev-align` if you do not use
 [uv](https://docs.astral.sh/uv/). The guided setup discovers local CSV,

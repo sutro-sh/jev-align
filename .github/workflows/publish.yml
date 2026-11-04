@@ -51,13 +51,15 @@ jobs:
         run: uv run --no-active --quiet ruff check src tests
 
       - name: Build distributions
-        run: uv build
+        run: uv run --no-active --no-sync python scripts/build_release.py --out-dir dist/pypi
 
       - name: Check distribution metadata
-        run: uvx twine check dist/*
+        run: uvx twine check dist/pypi/*
 
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/pypi/
 
   report-failure:
     name: Report publish failure
@@ -72,11 +74,11 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          echo "::error title=PyPI release failed::${GITHUB_REF_NAME} was not published. Fix the failed job and release a new version. ${RUN_URL}"
+          echo "::error title=PyPI release failed::${GITHUB_REF_NAME} was not fully published. Inspect all three PyPI projects. ${RUN_URL}"
           {
             echo "## ❌ PyPI release failed"
             echo
-            echo "**${GITHUB_REF_NAME} was not published.** PyPI will continue serving the previous version."
+            echo "**${GITHUB_REF_NAME} was not fully published.** Some distributions may already be available on PyPI."
             echo
             echo "Inspect the [failed workflow run](${RUN_URL}), fix the problem, and release a new version."
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -89,7 +91,8 @@ jobs:
             const title = `PyPI release failed: ${tag}`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
-              `The publish workflow failed, so **${tag} is not available on PyPI**.`,
+              `The publish workflow failed, so **${tag} may be only partially available on PyPI**.`,
+              'Check jev-align, decision-align, and decal before recovering the release.',
               '',
               `Failed run: ${runUrl}`,
               '',

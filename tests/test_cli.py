@@ -1366,6 +1366,10 @@ def test_update_prompt_upgrades_with_current_python_and_exits(monkeypatch) -> No
 
 
 def test_upgrade_prefers_uv_for_a_virtual_environment(monkeypatch) -> None:
+    def not_installed(name):
+        raise cli.PackageNotFoundError(name)
+
+    monkeypatch.setattr(cli, "distribution", not_installed)
     monkeypatch.setattr(cli, "_running_in_virtual_environment", lambda: True)
     monkeypatch.setattr(cli.shutil, "which", lambda executable: "/usr/local/bin/uv")
 
@@ -1381,6 +1385,21 @@ def test_upgrade_prefers_uv_for_a_virtual_environment(monkeypatch) -> None:
         "jev-align",
     ]
     assert commands[1][:4] == [cli.sys.executable, "-m", "pip", "install"]
+
+
+@pytest.mark.parametrize("aliases", [("decision-align",), ("decal",), ("decision-align", "decal")])
+def test_upgrade_includes_installed_aliases(monkeypatch, aliases) -> None:
+    def installed(name):
+        if name not in aliases:
+            raise cli.PackageNotFoundError(name)
+        return SimpleNamespace(version="0.1.7")
+
+    monkeypatch.setattr(cli, "distribution", installed)
+    monkeypatch.setattr(cli, "_running_in_virtual_environment", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda executable: "/usr/local/bin/uv")
+
+    for command in cli._upgrade_commands():
+        assert command[command.index("--upgrade") + 1:] == ["jev-align", *aliases]
 
 
 def test_upgrade_falls_back_to_pip_when_uv_fails(monkeypatch) -> None:
